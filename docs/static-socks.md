@@ -74,26 +74,24 @@ static-socks
 
 ## 3. Xray SOCKS outbound
 
+Xray 当前官方 SOCKS outbound schema 使用扁平字段：
+
 ```json
 {
   "tag": "static-socks",
   "protocol": "socks",
   "settings": {
-    "servers": [
-      {
-        "address": "YOUR_SOCKS_HOST",
-        "port": 12324,
-        "users": [
-          {
-            "user": "YOUR_SOCKS_USERNAME",
-            "pass": "YOUR_SOCKS_PASSWORD"
-          }
-        ]
-      }
-    ]
+    "address": "YOUR_SOCKS_HOST",
+    "port": 12324,
+    "user": "YOUR_SOCKS_USERNAME",
+    "pass": "YOUR_SOCKS_PASSWORD"
   }
 }
 ```
+
+官方文档：
+
+<https://xtls.github.io/config/outbounds/socks.html>
 
 替换：
 
@@ -106,6 +104,26 @@ YOUR_SOCKS_PASSWORD
 端口也按实际供应商修改。
 
 不要把这些真实值提交到公开 GitHub。
+
+### 一个重要安全边界
+
+SOCKS5 协议本身**不提供传输加密**。
+
+如果你的 SOCKS5 upstream 在公网另一端：
+
+```text
+VPS ── Internet ── SOCKS5 upstream
+```
+
+这段 SOCKS5 隧道本身不是加密隧道。目标网站如果使用 HTTPS，应用层内容仍由 HTTPS 保护，但 SOCKS5 本身不应该被当成 VPN / TLS 隧道。
+
+如果你需要更强的链路保密性，优先考虑：
+
+- 你自己控制并通过私网 / 加密隧道连接的上游；
+- 供应商明确提供的加密代理方案；
+- 在 SOCKS5 外再建立受控加密传输层。
+
+不要因为“固定 IP”就误认为链路本身更安全。
 
 ---
 
