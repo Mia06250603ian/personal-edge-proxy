@@ -1,0 +1,214 @@
+{
+  // 这不是生产配置原样复制，而是：
+  // 现网结构验证 + 当前 Xray 官方字段复核 + 脱敏 + 清理历史残留 后的示例。
+  //
+  // 当前官方文档使用：
+  // - streamSettings.method
+  // - REALITY server-side target
+  // - Hysteria inbound settings.users
+  //
+  // 如果你不使用 WARP 或固定 SOCKS5，请同时删除对应 outbound 和 routing rule。
+
+  "log": {
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log",
+    "loglevel": "warning"
+  },
+
+  "inbounds": [
+    {
+      "tag": "reality-vision",
+      "listen": "::",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "YOUR_UUID",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "method": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "target": "www.microsoft.com:443",
+          "serverNames": [
+            "www.microsoft.com"
+          ],
+          "privateKey": "YOUR_REALITY_PRIVATE_KEY",
+          "shortIds": [
+            "YOUR_SHORT_ID"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "metadataOnly": false
+      }
+    },
+
+    {
+      "tag": "hy2-xr",
+      "listen": "::",
+      "port": 24443,
+      "protocol": "hysteria",
+      "settings": {
+        "version": 2,
+        "users": [
+          {
+            "auth": "YOUR_HY2_PASSWORD",
+            "email": "personal"
+          }
+        ]
+      },
+      "streamSettings": {
+        "method": "hysteria",
+        "security": "tls",
+        "tlsSettings": {
+          "alpn": [
+            "h3"
+          ],
+          "certificates": [
+            {
+              "certificateFile": "/etc/xray/certs/YOUR_DOMAIN/fullchain.pem",
+              "keyFile": "/etc/xray/certs/YOUR_DOMAIN/key.pem"
+            }
+          ]
+        },
+        "hysteriaSettings": {
+          "version": 2,
+          "udpIdleTimeout": 60
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ],
+        "metadataOnly": false
+      }
+    }
+  ],
+
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {}
+    },
+
+    {
+      // 可选：Cloudflare WARP Local Proxy。
+      // 需要本机 warp-svc 已监听 127.0.0.1:40000。
+      "tag": "warp-official",
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "127.0.0.1",
+            "port": 40000
+          }
+        ]
+      }
+    },
+
+    {
+      // 可选：固定上游 SOCKS5。
+      // 不需要固定出口时请删掉这一段和下面对应 routing rule。
+      "tag": "static-socks",
+      "protocol": "socks",
+      "settings": {
+        "servers": [
+          {
+            "address": "YOUR_SOCKS_HOST",
+            "port": 12324,
+            "users": [
+              {
+                "user": "YOUR_SOCKS_USERNAME",
+                "pass": "YOUR_SOCKS_PASSWORD"
+              }
+            ]
+          }
+        ]
+      }
+    },
+
+    {
+      "tag": "block",
+      "protocol": "blackhole",
+      "settings": {}
+    }
+  ],
+
+  "routing": {
+    "domainStrategy": "IPOnDemand",
+    "rules": [
+      {
+        // 防止代理客户端访问 VPS 所在网络的私网 / 链路本地地址。
+        "type": "field",
+        "inboundTag": [
+          "hy2-xr",
+          "reality-vision"
+        ],
+        "ip": [
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "127.0.0.0/8",
+          "169.254.0.0/16",
+          "fc00::/7",
+          "fe80::/10"
+        ],
+        "outboundTag": "block"
+      },
+
+      {
+        // 示例：如果你希望 Claude / Anthropic 固定出口，走 static-socks。
+        // 这不是协议本身的硬要求；没有这个需求就删除此规则。
+        "type": "field",
+        "inboundTag": [
+          "hy2-xr",
+          "reality-vision"
+        ],
+        "domain": [
+          "domain:anthropic.com",
+          "domain:claude.ai"
+        ],
+        "network": "tcp,udp",
+        "outboundTag": "static-socks"
+      },
+
+      {
+        // 示例：给部分 AI 服务单独使用 WARP 出口。
+        // 按你的实际使用范围维护域名，不要把此列表当成永久完整列表。
+        "type": "field",
+        "inboundTag": [
+          "hy2-xr",
+          "reality-vision"
+        ],
+        "domain": [
+          "domain:openai.com",
+          "domain:chatgpt.com",
+          "domain:oaistatic.com",
+          "domain:oaiusercontent.com",
+          "domain:gemini.google.com",
+          "domain:aistudio.google.com",
+          "domain:generativelanguage.googleapis.com"
+        ],
+        "network": "tcp",
+        "outboundTag": "warp-official"
+      }
+    ]
+  }
+}
