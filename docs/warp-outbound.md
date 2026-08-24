@@ -43,7 +43,7 @@ WARP 的作用是给指定流量提供一个**独立 Cloudflare 出口**，而�
 4. 重连 / 故障恢复相对独立；
 5. Xray 只需要把它当本地 SOCKS5 outbound 使用。
 
-> WARP 不是住宅 IP，也不能保证某个目标服务一定接受它。请确认目标服务在你的所在地区可用，并遵守服务条款。
+> WARP 不是住宅 IP，也不能保证某个目标服务一定接受这个出口。请确认目标服务在你的所在地区可用，并遵守服务条款。
 
 ---
 
@@ -332,9 +332,13 @@ fi
 chmod 700 /usr/local/sbin/warp-watchdog.sh
 ```
 
-生产机当前使用 cron 定期检查。新部署也可以改成 systemd timer，核心原则不变：
+**公开 / 新部署的基线推荐用 systemd timer 调度这个 watchdog。** 生产机目前仍使用 cron，这是历史实现，可以继续作为简单环境的替代方案，但不要把它和 systemd timer 同时写成两个默认答案。
+
+两种调度方式的共同原则不变：
 
 > **检查真实出口，而不是只检查 daemon 是否活着。**
+
+另外，Xray 进程本身应由 systemd service 负责拉起和重启；WARP watchdog 解决的是另一类“daemon 活着但出口已失效”的问题。
 
 ---
 
