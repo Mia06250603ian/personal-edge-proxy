@@ -129,7 +129,7 @@
       "protocol": "socks",
       "settings": {
         "address": "YOUR_SOCKS_HOST",
-        "port": 12324,
+        "port": 1080,
         "user": "YOUR_SOCKS_USERNAME",
         "pass": "YOUR_SOCKS_PASSWORD"
       }
