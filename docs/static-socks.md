@@ -82,7 +82,7 @@ Xray 当前官方 SOCKS outbound schema 使用扁平字段：
   "protocol": "socks",
   "settings": {
     "address": "YOUR_SOCKS_HOST",
-    "port": 12324,
+    "port": 1080,
     "user": "YOUR_SOCKS_USERNAME",
     "pass": "YOUR_SOCKS_PASSWORD"
   }
@@ -101,7 +101,7 @@ YOUR_SOCKS_USERNAME
 YOUR_SOCKS_PASSWORD
 ```
 
-端口也按实际供应商修改。
+`1080` 只是通用示例端口，按你的实际供应商修改。
 
 不要把这些真实值提交到公开 GitHub。
 
