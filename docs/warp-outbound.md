@@ -189,20 +189,24 @@ curl --proxy socks5h://127.0.0.1:40000
 
 ## 6. 接入 Xray outbound
 
+Xray 当前官方 SOCKS outbound schema 是扁平的 `address / port / user / pass`，不是一些旧配置里常见的 `servers: []` 结构。
+
+WARP 本地代理通常不需要用户名密码，因此：
+
 ```json
 {
   "tag": "warp-official",
   "protocol": "socks",
   "settings": {
-    "servers": [
-      {
-        "address": "127.0.0.1",
-        "port": 40000
-      }
-    ]
+    "address": "127.0.0.1",
+    "port": 40000
   }
 }
 ```
+
+官方 Xray SOCKS outbound 文档：
+
+<https://xtls.github.io/config/outbounds/socks.html>
 
 然后只给指定规则使用它。
 
