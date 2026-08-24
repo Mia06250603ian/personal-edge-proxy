@@ -1,0 +1,33 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Production-only configuration
+config.production.json
+config.production.jsonc
+*.production.yaml
+*.production.yml
+
+# Backups and local scratch
+*.bak
+*.backup
+*.old
+*.swp
+*~
+
+# Logs
+*.log
+logs/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
