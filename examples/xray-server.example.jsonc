@@ -6,7 +6,9 @@
   // - streamSettings.method
   // - REALITY server-side target
   // - Hysteria inbound settings.users
+  // - SOCKS outbound 的 settings.address / port / user / pass 扁平结构
   //
+  // 生产机可能仍在使用旧版兼容字段；公开教程优先使用当前官方 schema。
   // 如果你不使用 WARP 或固定 SOCKS5，请同时删除对应 outbound 和 routing rule。
 
   "log": {
@@ -114,33 +116,22 @@
       "tag": "warp-official",
       "protocol": "socks",
       "settings": {
-        "servers": [
-          {
-            "address": "127.0.0.1",
-            "port": 40000
-          }
-        ]
+        "address": "127.0.0.1",
+        "port": 40000
       }
     },
 
     {
       // 可选：固定上游 SOCKS5。
+      // SOCKS5 本身不提供传输加密；远程上游请确保来源可信，并理解链路安全边界。
       // 不需要固定出口时请删掉这一段和下面对应 routing rule。
       "tag": "static-socks",
       "protocol": "socks",
       "settings": {
-        "servers": [
-          {
-            "address": "YOUR_SOCKS_HOST",
-            "port": 12324,
-            "users": [
-              {
-                "user": "YOUR_SOCKS_USERNAME",
-                "pass": "YOUR_SOCKS_PASSWORD"
-              }
-            ]
-          }
-        ]
+        "address": "YOUR_SOCKS_HOST",
+        "port": 12324,
+        "user": "YOUR_SOCKS_USERNAME",
+        "pass": "YOUR_SOCKS_PASSWORD"
       }
     },
 
