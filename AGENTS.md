@@ -1,111 +1,164 @@
-# AGENTS.md — AI maintainer guide
+# AGENTS.md — AI maintainer / deployer guide
 
 Read this file before editing or deploying the repository.
 
-## Project model
+## 1. Core model
 
-Keep the architecture separated into two layers:
+Keep the architecture separated into two independent layers:
 
 ```text
 Inbound  = how the client reaches the VPS
 Outbound = how the VPS reaches a destination
 ```
 
-Preferred inbound roles:
+Do not confuse inbound redundancy with outbound identity/reputation.
+
+Typical inbound roles:
 
 ```text
 Hysteria2                    primary daily entry
-VLESS + REALITY + Vision     optional TCP backup entry
+VLESS + REALITY + Vision     optional TCP backup
 VLESS + WS + CF Tunnel       optional emergency entry
 ```
 
-Preferred outbound roles:
+Typical outbound roles:
 
 ```text
-VPS direct       normal traffic
-WARP             optional selected-destination egress
-fixed SOCKS5     optional fixed-egress destinations
-block            explicit deny / fail-closed routes
+VPS direct       ordinary traffic
+WARP             preferred selected-AI egress
+fixed SOCKS5     optional stable egress for selected services
+block            explicit deny / fail-closed
 ```
 
-Do not collapse the design into one global tunnel.
+---
 
-## Deployment profiles — do not overbuild by default
+## 2. Deployment profiles — recommended interpretation
 
-The repository documents several layers, but they are not all mandatory.
+Profiles are not strictly cumulative. Use the profile that matches the user's real goal.
 
-Use the smallest profile that satisfies the user's goal.
-
-### Profile A — minimal / lazy path
+### Profile A — minimum viable
 
 ```text
-Client
-  -> Hysteria2
-  -> VPS
-  -> Direct
+Client -> HY2 -> VPS -> Direct
 ```
 
-This is a complete valid deployment.
+Use when the user only wants a simple working personal node.
 
-If HY2 is stable on the user's network, the AI may stop here. Do **not** force deployment of REALITY, WARP, fixed SOCKS5, Cloudflare Tunnel, a second VPS, or extra routing layers merely because examples exist in this repository.
+Trade-off: AI services see the VPS data-center egress directly. On low-reputation or heavily reused data-center ranges, users may encounter more availability challenges, CAPTCHAs, regional mismatches, or account-security checks.
 
-### Profile B — resilient inbound
+Do **not** claim that this guarantees account suspension or that data-center IPs are universally unusable.
+
+### Profile B — inbound-resilient direct egress
 
 ```text
 HY2 primary
 +
-VLESS + REALITY + Vision backup
+REALITY backup
++
+VPS Direct egress
 ```
 
-Use when the user wants a TCP fallback for networks where UDP is poor or restricted.
+This reduces **inbound protocol failure risk** when UDP is poor or unavailable.
 
-### Profile C — selected WARP egress
+It does **not** materially improve the final egress identity versus Profile A, because destinations still see the VPS Direct IP.
 
-Add WARP Local Proxy only when the user wants selected destinations to leave through a separate Cloudflare egress.
+### Profile C — WARP-selected AI egress
 
-### Profile D — fixed egress
+```text
+HY2 -> VPS
+        |- ordinary traffic -> Direct
+        `- selected AI      -> WARP Local Proxy
+```
 
-Add a trusted fixed SOCKS5 only when the user explicitly wants a stable final egress for selected destinations.
+Use when the user wants to reduce dependence on the VPS's raw data-center egress for AI/SaaS traffic.
 
-### Profile E — emergency Cloudflare Tunnel entry
+This is the preferred starting profile for an AI-heavy use case.
 
-Optional. Add only when the user wants another emergency inbound path.
+REALITY is optional here; do not force it if HY2 is stable.
 
-The rule is:
+### Profile D — recommended practical AI profile
 
-> Start minimal. Add one layer at a time. Stop when the user's actual goal is satisfied.
+```text
+HY2 -> VPS
+        |- ordinary traffic          -> Direct
+        |- OpenAI / ChatGPT / Codex  -> WARP
+        |- Gemini / Google AI        -> WARP
+        `- Claude / Anthropic        -> trusted fixed SOCKS5 (optional by policy)
+```
 
-## Human SSH bootstrap boundary
+This is the repository maintainer's **preferred practical profile** when the user primarily uses AI services and also wants a deliberately stable Claude/Anthropic egress.
 
-An AI must not assume it can safely access a fresh VPS just because the user has an IP address and password.
+Reasons:
 
-Before autonomous or semi-autonomous SSH deployment, require a one-time **human bootstrap** unless secure key-based access already exists.
+- HY2 keeps the client side simple and fast when UDP is healthy.
+- WARP decouples selected AI traffic from the VPS's raw data-center IP.
+- A fixed SOCKS5 can keep selected services on a stable final egress when the user explicitly wants that property.
+- Direct remains available for normal traffic and as a clean network baseline.
+
+Do not claim:
+
+- that WARP is residential;
+- that Claude requires residential IPs;
+- that this profile guarantees avoiding bans or risk checks;
+- that any service must use these exact routes.
+
+### Profile E — extra inbound resilience / icing on the cake
+
+Start from Profile D, then optionally add:
+
+```text
+VLESS + REALITY + Vision
+Cloudflare Tunnel / VLESS WS
+```
+
+Use only when the user actually wants more inbound fallback paths.
+
+This is an **availability enhancement**, not an egress-reputation enhancement.
+
+### Default deployment rule
+
+If the user says only "set this up for AI use" and provides no contrary preference:
+
+1. prefer **Profile C** as the default balanced target;
+2. upgrade to **Profile D** if the user has/provides a trusted fixed egress and wants Claude/Anthropic pinned to it;
+3. add REALITY only when the user wants TCP fallback or the network has real UDP problems;
+4. add Cloudflare Tunnel only as an extra emergency entry.
+
+Do not overbuild simply because example files exist.
+
+---
+
+## 3. Human SSH bootstrap boundary
+
+An AI must not assume it can safely operate a fresh VPS merely because the user knows its IP/password.
+
+Before autonomous or semi-autonomous deployment, require a one-time human bootstrap unless secure key-based access already exists.
 
 Recommended flow:
 
 ```text
 Human logs in once using provider password / console
         ↓
-Human generates an SSH key pair on the local computer
+Human generates SSH key pair locally
         ↓
 Only the public key is installed on the VPS
         ↓
-Human verifies key-based SSH login works
+Human verifies key-based SSH login
         ↓
-Local AI/Agent may use the already-working ssh command / SSH agent / SSH config
+Local AI/Agent uses the already-working ssh / SSH agent / SSH config
 ```
 
 Rules:
 
-1. The SSH private key stays on the user's local machine.
-2. Only the `.pub` key goes into server `authorized_keys`.
-3. Do not ask the user to paste a root password or SSH private key into chat, GitHub, Issues, logs, or prompts.
-4. If the local AI environment can invoke the user's existing `ssh`, SSH agent, or `~/.ssh/config`, use that instead of reading/exporting the private key.
-5. Do not disable password login until key-based login has been tested successfully.
-6. Preserve provider-console recovery access when possible.
-7. If secure SSH access cannot be established, stop and ask the human to complete the bootstrap rather than inventing credentials or weakening SSH security.
+1. SSH private keys remain on the user's local device.
+2. Only the `.pub` key goes to `authorized_keys`.
+3. Never ask the user to paste a root password or private key into chat, GitHub, Issues, logs, or prompts.
+4. Prefer invoking the user's existing local `ssh`, SSH Agent, or `~/.ssh/config` over reading/exporting private keys.
+5. Do not disable password login until key-based login is proven to work.
+6. Preserve provider-console recovery where possible.
+7. If secure SSH access cannot be established, stop and ask the human to complete bootstrap.
 
-For Windows, a normal bootstrap may be:
+Windows example:
 
 ```powershell
 ssh-keygen -t ed25519
@@ -113,36 +166,28 @@ Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub | ssh root@SERVER_IP "umask 077
 ssh root@SERVER_IP
 ```
 
-The final `ssh` must succeed using the local private key before the AI continues with unattended changes.
+The final `ssh` must succeed before unattended changes continue.
 
-## Deployment resource contract
+---
 
-Distinguish **required resources for the selected profile** from **optional enhancements**. Do not invent missing resources or silently substitute them.
+## 4. Resource contract
 
-### Required for Profile A — HY2 only
+Distinguish **required for the selected profile** from **optional enhancements**.
 
-The user needs:
+### Required for HY2 baseline
 
-1. **A VPS or equivalent Linux host they control**
-   - root or sudo access;
-   - supported Linux such as Ubuntu 24.04 LTS or Debian 12+;
-   - provider policy permitting the intended personal VPN/proxy use.
-2. **A publicly reachable server address**
-   - normally one public IPv4 is sufficient;
-   - IPv6 is optional.
-3. **UDP reachability for the chosen HY2 port**
-   - repository examples use UDP 24443;
-   - another port is fine if client and server agree.
-4. **A compatible client device and client software**
-   - e.g. v2rayN/sing-box/Mihomo as appropriate.
-5. **HY2 authentication material**
-   - freshly generated password/auth value.
-6. **TLS material accepted by the HY2 client**
-   - public/ACME certificate path or another explicitly chosen certificate strategy.
-7. **Normal outbound Internet access from the VPS.**
-8. **Verified SSH key-based administration path before AI-controlled deployment**, unless an equally secure pre-existing access method is already configured.
+- VPS / Linux host controlled by the user;
+- root or sudo access;
+- provider policy permitting intended personal VPN/proxy use;
+- public server address;
+- UDP reachability on selected HY2 port;
+- compatible client;
+- HY2 password/auth material;
+- TLS material accepted by the HY2 client;
+- normal VPS outbound Internet access;
+- verified SSH key-based administration path before AI-controlled deployment, unless an equally secure path already exists.
 
-Resolve before changing the server:
+Resolve first:
 
 ```text
 SERVER_IP_OR_HOSTNAME
@@ -152,64 +197,160 @@ HY2_TLS_CERTIFICATE_STRATEGY
 CLIENT_TYPE
 ```
 
-Generate secrets during deployment unless the user already has them. Never fabricate credentials.
+### Additional resources for WARP
 
-### Additional resources only if REALITY is selected
+Only if WARP is selected:
 
-Required only for the REALITY backup entry:
+```text
+Cloudflare WARP Linux client / account state
+local proxy mode support
+chosen local proxy port (repo example: 127.0.0.1:40000)
+```
+
+Do not make WARP the host-wide default route in this project.
+
+### Additional resources for fixed SOCKS5
+
+Only if a fixed egress is selected:
+
+```text
+SOCKS_HOST
+SOCKS_PORT
+SOCKS_USERNAME (if required)
+SOCKS_PASSWORD (if required)
+```
+
+The upstream must be trusted and legitimately usable by the user.
+
+### Additional resources for REALITY
+
+Only if REALITY backup inbound is selected:
 
 ```text
 VLESS UUID
 REALITY X25519 private/public key pair
 REALITY short ID
-chosen REALITY serverName/target strategy
-reachable TCP port (example: 443)
+serverName/target strategy
+reachable TCP port
 ```
 
-A domain name is **not inherently required for REALITY itself**.
+A domain is not inherently required for REALITY itself.
 
-### Optional / not required for Profile A
+### Additional resources for Cloudflare Tunnel
 
-The following are not required for a working HY2-only deployment:
+Only if the emergency Tunnel entry is selected:
 
-- VLESS + REALITY + Vision;
+```text
+Cloudflare account
+appropriate domain / tunnel configuration
+secret/token handling path
+```
+
+### Not universally required
+
+Do not require these merely to run the project:
+
 - residential IP;
-- fixed SOCKS5 upstream;
-- Cloudflare WARP;
+- fixed SOCKS5;
+- WARP;
+- REALITY;
 - Cloudflare Tunnel;
 - second VPS;
-- IPv6;
-- domain name for REALITY.
+- IPv6.
 
-They become conditionally required only when the selected feature needs them:
+---
 
-| Resource | Required only when |
-|---|---|
-| Domain + DNS control | using an ACME/public-certificate flow that requires it, or other domain-based features |
-| REALITY UUID/key pair/short ID | enabling REALITY backup inbound |
-| Cloudflare WARP client/account state | enabling WARP outbound |
-| Fixed SOCKS5 host/port/credentials | enabling fixed-egress routing |
-| Cloudflare account/token/domain | enabling optional Cloudflare Tunnel entry |
-| Provider console / security-group access | provider has an external firewall or recovery step that must be managed |
+## 5. Routing policy semantics
 
-If an optional resource is missing, omit the feature and keep the simpler profile functional.
+Repository example policy may use:
 
-## Human workflow to preserve
+```text
+ordinary traffic                 -> direct
+OpenAI / ChatGPT / Codex         -> WARP
+Gemini / Google AI               -> WARP
+Claude / Anthropic               -> optional fixed SOCKS5
+```
 
-README should keep these points obvious:
+Treat this as a maintainer preference / example policy, not a universal service requirement.
 
-1. HY2 alone is enough for many users.
-2. The maintainer normally uses HY2.
-3. REALITY + Vision is a backup, not a mandatory second protocol.
-4. The client chooses an inbound protocol.
-5. Xray on the VPS chooses outbound paths when advanced routing is enabled.
-6. WARP is optional per-destination egress, not a host-wide default route.
-7. Fixed SOCKS5 is optional and only for deliberate stable-egress use.
-8. Before letting an AI operate a fresh VPS, a human should establish and verify SSH public-key access.
+Use wording such as:
 
-## Audited client reality
+> Some services may behave differently across regions or data-center IP ranges. A separate explicitly selected egress can make routing, troubleshooting, and egress stability more predictable.
 
-The current Windows client was read-only audited as:
+Avoid unsupported claims such as:
+
+- "this prevents bans";
+- "this IP can never be blocked";
+- "Claude requires residential IP";
+- "WARP is a residential IP".
+
+---
+
+## 6. WARP architecture rule
+
+Prefer **WARP Local Proxy / WarpProxy mode**:
+
+```text
+Linux default route -> VPS native network
+
+Xray selected route
+   -> 127.0.0.1:40000
+   -> warp-svc
+   -> Cloudflare WARP
+```
+
+Never make global WARP routing the baseline design.
+
+Why:
+
+- keeps SSH/system updates on native route;
+- prevents fixed SOCKS upstream connections from accidentally traversing WARP;
+- keeps Direct as a clean baseline;
+- limits WARP failure impact to the routes that explicitly use it.
+
+Official references:
+
+- <https://developers.cloudflare.com/warp-client/get-started/linux/>
+- <https://developers.cloudflare.com/warp-client/warp-modes/>
+
+Cloudflare CLI syntax changes. Always prefer current docs plus local `warp-cli --help` over historical commands.
+
+### Watchdog policy
+
+Two separate concerns:
+
+```text
+Xray lifecycle             -> systemd service
+WARP real-egress health    -> connectivity watchdog
+```
+
+For WARP health, test real requests through the local proxy. A live `warp-svc` process is not sufficient evidence.
+
+Prefer a systemd timer for new/public deployments. Cron may be mentioned only as a historical/simple alternative.
+
+---
+
+## 7. Fixed SOCKS5 boundary
+
+SOCKS5 itself does not provide transport encryption.
+
+When documenting a remote fixed SOCKS5:
+
+- state that SOCKS itself is not an encrypted VPN;
+- note HTTPS still protects HTTPS application payloads end-to-end;
+- if stronger link confidentiality is required, use a controlled encrypted/private path or provider that supplies one.
+
+Do not equate "fixed/residential IP" with "encrypted" or "safer transport".
+
+For deliberately pinned destinations, prefer fail-closed behavior unless the user explicitly requests fallback.
+
+Do not silently reroute fixed-egress traffic to Direct when the upstream fails.
+
+---
+
+## 8. Audited client reality
+
+Current Windows audit:
 
 ```text
 v2rayN 7.24.2
@@ -218,77 +359,25 @@ REALITY profile  -> Xray core
 TUN + Rule mode
 ```
 
-Do not describe v2rayN itself as “the Xray core”. It is a GUI/configuration manager that can launch different cores.
+v2rayN is a GUI/config manager, not one specific core.
 
-Observed behavior:
+Observed model:
 
 ```text
 GUI metadata + global preferences
               ↓
         v2rayN generates
               ↓
-core-specific runtime configuration
+core-specific runtime config
 ```
 
-Therefore sing-box, Xray and Mihomo examples must keep their field names separate.
+Keep sing-box, Xray and Mihomo field names separate.
 
-## Example routing policy
+---
 
-A documented advanced example may use:
+## 9. Xray source of truth
 
-```text
-ordinary traffic                 -> direct
-selected AI/account-heavy sites  -> WARP
-Claude / Anthropic               -> optional fixed SOCKS5
-```
-
-Treat this as an example policy, not a universal service requirement.
-
-Do not claim that:
-
-- WARP is a residential IP;
-- WARP guarantees access to any service;
-- a particular AI provider always requires a residential IP.
-
-Preferred explanation: some services may behave differently across regions or data-center IP ranges, so a separate explicitly selected egress can make routing and identity more predictable.
-
-## WARP rule
-
-Prefer WARP Local Proxy / `WarpProxy` mode, with Xray sending only selected traffic to the local proxy.
-
-```text
-Xray routing
-   -> local WARP proxy (127.0.0.1:40000)
-   -> Cloudflare egress
-```
-
-Do not make WARP the VPS system-wide default route in the baseline design.
-
-Official references:
-
-- Linux client: <https://developers.cloudflare.com/warp-client/get-started/linux/>
-- WARP modes: <https://developers.cloudflare.com/warp-client/warp-modes/>
-
-Cloudflare CLI syntax changes. Prefer current official docs plus local `warp-cli --help` over historical blog commands.
-
-### Watchdog policy
-
-There are two separate supervision problems:
-
-```text
-Xray process supervision       -> systemd service
-WARP real-egress health check  -> connectivity watchdog
-```
-
-For Xray, use systemd process supervision.
-
-For WARP connectivity health, prefer a systemd timer in new/public deployments. Cron may be mentioned only as a historical implementation or explicitly labelled simpler alternative.
-
-The watchdog must test real egress through the local WARP proxy, not merely process state.
-
-## Xray source of truth
-
-Prefer current official Xray documentation over copied blog configs or remembered production aliases:
+Prefer current official Xray docs over copied blog configs or remembered production aliases:
 
 - Hysteria inbound: <https://xtls.github.io/config/inbounds/hysteria.html>
 - Hysteria transport: <https://xtls.github.io/config/transports/hysteria.html>
@@ -300,57 +389,48 @@ Prefer current official Xray documentation over copied blog configs or remembere
 
 Current assumptions:
 
-- Xray supports Hysteria2 in current official documentation.
-- Hysteria version is 2.
-- HY2 is the primary entry.
-- REALITY/Vision is optional backup.
-- VLESS uses `xtls-rprx-vision` in the documented REALITY profile.
-- Current transport docs use `streamSettings.method`; historical configs may use older fields/aliases.
-- REALITY server-side docs currently use `target`; historical configs may use `dest`.
-- Current SOCKS outbound docs use flat `settings.address`, `settings.port`, optional `settings.user` and `settings.pass`; production history may contain older shapes.
+- current Xray supports Hysteria2;
+- Hysteria version is 2;
+- HY2 is the primary entry;
+- REALITY/Vision is optional backup;
+- current docs may use fields that differ from historical production aliases;
+- REALITY current server-side docs use `target`; historical configs may show `dest`;
+- current SOCKS outbound docs use flat address/port/user/pass fields; old configs may use older shapes.
 
-If upstream syntax changes, update every affected example/doc together.
+If upstream schema changes, update every affected example/doc together.
 
-## Repository file map and synchronization rules
+---
+
+## 10. Repository file map
 
 ```text
-README.md                              Chinese human-facing architecture and usage
+README.md                              Chinese human-facing architecture and profile guidance
 AGENTS.md                              AI deployment/maintenance contract
 examples/xray-server.example.jsonc     server-side Xray schema example
 examples/v2rayn-hysteria2.example.md   audited v2rayN / sing-box HY2 client example
 examples/v2rayn-reality-vision.example.md
                                        v2rayN / Xray REALITY client example
-docs/warp-outbound.md                  optional WARP egress behavior
-docs/static-socks.md                   optional fixed SOCKS5 egress behavior
+docs/warp-outbound.md                  WARP egress behavior and validation
+docs/static-socks.md                   fixed SOCKS5 egress behavior
 ```
 
 Synchronization rules:
 
-- Xray schema change -> server example + README references + affected docs + AGENTS assumptions.
-- v2rayN/sing-box HY2 field change -> HY2 client example + affected README/client notes.
-- REALITY client field change -> REALITY client example + affected README/client notes.
-- WARP policy/CLI change -> WARP doc + server example if necessary + AGENTS policy if architecture changes.
-- fixed SOCKS5 schema/policy change -> static SOCKS doc + server example + AGENTS if safety boundary changes.
+- Xray schema change -> server example + README references + affected docs + AGENTS.
+- HY2 client field change -> HY2 client example + relevant README notes.
+- REALITY client field change -> REALITY example + relevant README notes.
+- WARP policy/CLI change -> WARP doc + server example if needed + AGENTS.
+- SOCKS schema/policy change -> static SOCKS doc + server example + AGENTS if safety boundary changes.
 
-Do not leave contradictory field names or deployment requirements across files.
+Never leave contradictory assumptions across files.
 
-## Production host is not the template
+---
 
-The production VPS evolved through experiments and may contain legacy paths, backups, watchdog scripts, compatibility fields or unused configuration.
+## 11. Production host is not the template
 
-Do not copy historical filesystem layout merely because it exists.
+Production evolved through experiments and may contain legacy paths/backups/compatibility fields.
 
-Prefer clean public layouts such as:
-
-```text
-/usr/local/bin/xray
-/usr/local/etc/xray/config.json
-systemd-managed services
-explicit firewall rules
-minimal configs
-```
-
-Derive public examples through:
+Public examples should follow:
 
 ```text
 working production behavior
@@ -364,11 +444,23 @@ remove secrets + legacy/dead config
 clean public example
 ```
 
-## Secret handling
+Prefer clean layouts such as:
 
-Never add live secrets to this repository.
+```text
+/usr/local/bin/xray
+/usr/local/etc/xray/config.json
+systemd-managed services
+explicit firewall rules
+minimal configs
+```
 
-Use placeholders only:
+---
+
+## 12. Secret handling
+
+Never commit or paste live secrets.
+
+Placeholders only:
 
 ```text
 YOUR_SERVER_IP
@@ -384,7 +476,7 @@ YOUR_SOCKS_USERNAME
 YOUR_SOCKS_PASSWORD
 ```
 
-Never commit or paste:
+Never expose:
 
 - SSH private keys;
 - root/VPS passwords;
@@ -394,31 +486,13 @@ Never commit or paste:
 - subscription URLs;
 - full production configs containing secrets.
 
-## Remote SOCKS5 security boundary
+---
 
-SOCKS5 itself does not provide transport encryption.
+## 13. Firewall / listeners
 
-When documenting a remote fixed SOCKS5 over the public Internet, state that:
+Open only selected-feature ports.
 
-- the SOCKS tunnel is not itself an encrypted VPN;
-- HTTPS still protects HTTPS application content end-to-end;
-- stronger transport confidentiality requires a private/encrypted path or provider that supplies one.
-
-Do not equate “fixed/residential IP” with “encrypted or safer transport”.
-
-## Routing safety
-
-Keep specific routing rules before broad catch-all rules.
-
-For destinations deliberately bound to a fixed egress, document fail-closed behavior unless the user explicitly requests fallback.
-
-Do not silently change a fixed-egress route to VPS direct when its upstream is unavailable.
-
-## Firewall and service management
-
-Only open ports for features actually selected.
-
-Typical full-profile listeners:
+Example full profile:
 
 ```text
 TCP 22      SSH
@@ -426,67 +500,51 @@ TCP 443     REALITY
 UDP 24443   HY2
 ```
 
-For HY2-only Profile A, REALITY TCP 443 does not need to be exposed merely because the repository contains a REALITY example.
+A HY2 + WARP + fixed-SOCKS Profile D does not need REALITY TCP 443 unless REALITY is actually enabled.
 
-Preserve SSH access before firewall changes and remember provider-side security groups may also exist.
+Preserve SSH access before firewall changes. Remember provider-side security groups may exist independently of host firewall.
 
-## Editing rules
+---
 
-Before changing protocol examples:
+## 14. Testing philosophy
 
-1. verify current upstream syntax;
-2. preserve placeholders;
-3. keep tags readable;
-4. mark each component required vs optional;
-5. explain the failure mode introduced by each extra layer;
-6. include a validation/test step when possible;
-7. never copy real production credentials;
-8. distinguish historical working fields from current recommended fields;
-9. preserve the HY2-only minimal path.
-
-Useful Xray validation command:
-
-```bash
-xray run -test -config /usr/local/etc/xray/config.json
-```
-
-## Testing philosophy
-
-Do not call a path good based on one speed test.
+Change one variable at a time.
 
 Prefer checking:
 
 - connection success rate;
-- latency and variance;
+- latency / variance;
 - timeouts;
 - peak-hour behavior;
-- sustained small transfers;
-- long-lived connection stability;
-- final intended egress IP.
+- sustained transfer stability;
+- long-lived connection behavior;
+- final egress IP for each route.
 
-Test one path at a time and change one variable at a time.
+Do not call a path healthy from one speed test.
 
-## AI deployment self-check
+### AI deployment self-check
 
-Before telling the user deployment is complete, verify only the features that were actually selected:
+Before saying deployment is complete, verify the features actually selected:
 
 1. SSH key-based administration still works.
-2. Xray/server configuration test passes.
-3. Expected listeners are present — and no unnecessary example ports were opened.
-4. HY2 client/server credentials match if HY2 is deployed.
-5. REALITY client/server credentials match if REALITY is deployed.
-6. Direct egress works.
-7. If WARP is enabled, traffic through the local proxy reaches the intended WARP egress.
-8. If fixed SOCKS5 is enabled, the intended route reaches the fixed egress and does not silently fall back.
-9. Firewall/provider security-group rules still permit SSH and selected proxy ports.
-10. No real secrets were written to repository, logs, issues or chat output.
+2. Server config validation passes.
+3. Expected listeners are present and unnecessary example ports are closed.
+4. HY2 client/server credentials match.
+5. Direct egress works.
+6. If WARP is enabled, a request through the local proxy reaches the intended WARP egress.
+7. If fixed SOCKS5 is enabled, selected traffic reaches that fixed egress and does not silently fall back.
+8. If REALITY is enabled, client/server UUID/key/short-ID/serverName parameters match.
+9. Firewall/provider rules permit only the intended management/proxy ports.
+10. No real secrets were written to repository, logs, Issues, or chat output.
 
-Do not claim successful end-to-end client operation if the client side was not actually tested.
+Do not claim end-to-end client success unless the client path was actually tested.
 
-## Documentation style
+---
 
-`README.md` is for Chinese-speaking humans: explain why first, commands second.
+## 15. Documentation style
 
-`AGENTS.md` is for AI maintainers/deployers: preserve architecture, SSH bootstrap boundary, minimal deployment path, safety constraints, source-of-truth links and secret hygiene.
+`README.md` is for Chinese-speaking humans: explain the practical recommendation first.
+
+`AGENTS.md` is for AI maintainers/deployers: preserve architecture, profile semantics, SSH bootstrap boundary, resource prerequisites, safety boundaries, source-of-truth links and secret hygiene.
 
 The repository must remain understandable without private production context.
