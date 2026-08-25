@@ -43,6 +43,97 @@ Client
 > - HY2 / REALITY 解决“我怎么稳定地进入 VPS”；
 > - Direct / WARP / SOCKS5 解决“VPS 最后以什么出口访问目标服务”。
 
+### 如果你懒：只部署 HY2 就够了
+
+这点很重要：**本仓库不是要求你把图里的所有东西全部装一遍。**
+
+最小可用形态完全可以只有：
+
+```text
+Client
+  ↓ Hysteria2
+VPS
+  ↓ Direct
+Internet
+```
+
+如果你的网络里 HY2 已经长期稳定，这就已经是一套完整可用的个人节点。
+
+后面的组件都属于按需增强：
+
+| 组件 | 是否必需 | 什么时候再加 |
+|---|---|---|
+| Hysteria2 | **最小方案必需** | 日常主入口 |
+| VLESS + REALITY + Vision | 否 | 想要一个 TCP 备用入口时 |
+| Cloudflare WARP | 否 | 希望指定流量使用独立 Cloudflare 出口时 |
+| Fixed SOCKS5 | 否 | 某些目标需要长期固定最终出口时 |
+| Cloudflare Tunnel / VLESS WS | 否 | 想再留一条应急入口时 |
+
+所以最实际的搭建顺序通常是：**先把 HY2 跑稳，觉得够用就可以停。**
+
+---
+
+## 如果准备把部署交给 AI：先由人完成一次 SSH 引导
+
+AI 能帮你安装和配置服务器，但它首先得有一个**安全、可重复的 SSH 登录方式**。
+
+推荐流程是：
+
+```text
+人类第一次用 VPS 初始密码 / 厂商控制台登录
+        ↓
+在自己的电脑生成 SSH 密钥对
+        ↓
+只把公钥放到 VPS 的 authorized_keys
+        ↓
+确认无密码密钥登录成功
+        ↓
+再让本地 Claude Code / Codex / 其他 Agent 通过 SSH 操作
+```
+
+### 1. 在自己的电脑生成密钥
+
+```bash
+ssh-keygen -t ed25519
+```
+
+默认会得到类似：
+
+```text
+~/.ssh/id_ed25519       私钥：只留在自己的电脑
+~/.ssh/id_ed25519.pub   公钥：可以放到服务器
+```
+
+**不要把私钥内容、VPS root 密码贴进聊天、Issue 或 GitHub。**
+
+### 2. 把公钥加入 VPS
+
+Linux / macOS 常用：
+
+```bash
+ssh-copy-id root@YOUR_SERVER_IP
+```
+
+Windows PowerShell 没有 `ssh-copy-id` 时，可以在确认目标 IP 后使用：
+
+```powershell
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub | ssh root@YOUR_SERVER_IP "umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys"
+```
+
+这一步会要求你最后输入一次 VPS 密码，用来把**公钥**写进服务器。
+
+### 3. 先由人验证密钥登录
+
+```bash
+ssh root@YOUR_SERVER_IP
+```
+
+确认它已经可以使用本地私钥登录之后，再把后续施工交给 AI。
+
+> 不要在密钥尚未验证成功之前关闭 SSH 密码登录，否则很容易把自己锁在服务器外面。
+
+如果本地 Agent 能直接使用你的终端、SSH Agent 或现有 `~/.ssh/config`，它通常不需要知道私钥内容；它只需要调用本机已经可用的 `ssh`。
+
 ---
 
 ## 为什么我会给 AI 服务单独选出口
@@ -236,6 +327,8 @@ TCP 443     VLESS + REALITY + Vision
 UDP 24443   Hysteria2
 ```
 
+如果你只部署 HY2，则只需要为实际使用的 SSH 和 HY2 端口放行对应规则。
+
 也可以让 HY2 使用 UDP 443、REALITY 使用 TCP 443，因为 TCP 和 UDP 可以复用同一个数字端口；本仓库为了方便排错，示例保留独立 UDP 端口。
 
 ---
@@ -258,6 +351,8 @@ HY2 基于 QUIC / UDP，在合适线路上通常有很好的吞吐和弱网表�
 - 单协议不应该成为唯一故障点。
 
 所以这不是“哪个协议绝对更高级”的问题，而是**给入口做冗余**。
+
+如果你已经确认自己常用网络里的 HY2 足够稳定，也完全可以不部署 REALITY。
 
 ---
 
@@ -380,13 +475,15 @@ YOUR_SOCKS_PASSWORD
 
 ```text
 1. 测 VPS 线路
-2. SSH / 防火墙 / 系统基线
-3. 先部署 REALITY 或 HY2 其中一个
-4. 客户端验证
-5. 再加第二个入口
-6. 再加 WARP
-7. 再加固定 SOCKS5（如果需要）
-8. 最后做复杂域名分流和保活
+2. 人类首次 SSH 登录，并配置/验证本地 SSH 公钥登录
+3. 再让 AI / Agent 接手 SSH 施工
+4. 系统基线与防火墙
+5. 只部署 HY2，先完成客户端验证
+6. 如果 HY2 已经够用：可以到此停止
+7. 需要 TCP 备用时再加 REALITY + Vision
+8. 需要独立 AI 出口时再加 WARP
+9. 确实需要固定出口时再加 SOCKS5
+10. 最后才考虑 Cloudflare Tunnel、复杂分流和额外保活
 ```
 
 每次只增加一个变量，出问题才知道是哪一层。
