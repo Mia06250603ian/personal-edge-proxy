@@ -255,22 +255,45 @@ UDP 24443    HY2      ← 最容易漏掉的就是这条
 > ⚠️ **代理 App 能看到你的全部流量。** 不要安装来路不明的套壳应用——
 > 那个风险比脏 IP 大得多。
 
-可用的三个：
+可用的四个：
 
 | App | 价格 | HY2 | 说明 |
 |---|---|---|---|
-| **Stash** | 约 $4.99–5.99 买断 | ✅ | iOS 上最成熟的 mihomo（Clash.Meta）前端，Clash 生态的正解 |
 | **Shadowrocket** | 约 $2.99 买断 | ✅ | 最老牌，中文教程最多，排错最容易 |
-| **sing-box (SFI)** | 免费 | ✅ 原生 | 官方出品，但见下方注意事项 |
+| **Stash** | 约 $4.99–5.99 买断 | ✅ | iOS 上最成熟的 mihomo（Clash.Meta）前端 |
+| **Clash (by Hako)** | **免费** | ✅ | mihomo 内核的新客户端，见下方说明 |
+| **sing-box (SFI)** | 免费 | ✅ 原生 | 官方出品，见下方注意事项 |
 
-都是一次性买断，非订阅，同一 Apple ID 全设备通用。
+付费的两个都是一次性买断，非订阅，同一 Apple ID 全设备通用。
 
 **怎么选：**
 
-- 想要 Clash 的规则生态 → **Stash**
-- 只想稳定连上、少折腾 → **Shadowrocket**
+- 想稳、想少折腾、看重口碑积累 → **Shadowrocket**
+- 想要 Clash 规则生态且愿意付费 → **Stash**
+- 想零成本先验证节点通不通 → **Clash (by Hako)**
 
 如果你只有一个节点，其实用不到 Clash 的复杂分流能力，Shadowrocket 就够。
+
+**关于 Clash (by Hako)** — 与前面提到的可疑套壳应用不同，这个来源可查：
+[App Store](https://apps.apple.com/us/app/clash-rule-based-proxy-utility/id6794257189) ·
+[官网 clash.md](https://clash.md/) ·
+[GitHub TokenPLS/Hako-Client](https://github.com/TokenPLS/Hako-Client)。
+基于 mihomo 内核，原生 SwiftUI，明确支持 Hysteria2 / TUIC / VLESS 等，声明不收集数据。
+
+但要知情：**它很新**——版本 1.0.x，仓库 commit 和 release 都极少，且
+**苹果客户端源码尚未公开**（README 说明 Hako 内核已开源，客户端源码待 App Store
+审核稳定后再发布）。这不代表有问题，但意味着目前缺少长期使用验证。
+
+**sing-box 注意事项**：官方文档写明他们目前**无法在 App Store 更新**
+（审核误判违规），TestFlight 名额仅限赞助者。App Store 上的版本可能偏旧。
+上架名称近期有变动（`sing-box-vt` / `sing-box MT`），**认准开发者是 SagerNet**。
+
+> 💡 **选客户端的本质是选择信任对象。**
+> 代理客户端能看到你的全部明文流量。免费、新上架的应用不等于不可信，
+> 但如果你的目标是长期稳定，多年口碑本身也是一种保障——
+> 在客户端上省几十块，通常不是性价比高的地方。
+>
+> 折中做法：**先用免费客户端验证节点是否正常，确认可用后再决定是否换成付费老牌客户端。**
 
 **sing-box 注意事项**：官方文档写明他们目前**无法在 App Store 更新**
 （审核误判违规），TestFlight 名额仅限赞助者。App Store 上的版本可能偏旧。
