@@ -324,16 +324,117 @@ UDP 24443    HY2      ← 最容易漏掉的就是这条
 
 如果显示的还是运营商的 IP，说明没走代理，回第 6 节排错。
 
+### 4.0.5 Clash / mihomo 系客户端：参考配置
+
+这类客户端往往**只认订阅或 YAML 配置，不认单条 `hysteria2://` 分享链接**。
+遇到「剪贴板里是一条节点分享链接，不是订阅」这种提示，就新建一个空白配置，
+在「编辑源码」里贴下面这份（把密码换成你自己的）：
+
+```yaml
+mixed-port: 7890
+mode: rule
+log-level: info
+ipv6: false
+
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+
+proxies:
+  - name: my-hy2
+    type: hysteria2
+    server: YOUR_SERVER_IP
+    port: 24443
+    password: YOUR_HY2_PASSWORD
+    sni: www.bing.com
+    skip-cert-verify: true      # 对应链接里的 insecure=1，自签证书必需
+    up: "30 Mbps"               # 填接近你真实带宽的值
+    down: "150 Mbps"
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - my-hy2                  # 故意不列 DIRECT，见 §4.2
+
+rules:
+  - MATCH,PROXY
+```
+
+**三个容易翻车的点：**
+
+- **必须先全选清空再粘贴。** 贴到文件末尾会让 `proxies:` 出现两次，
+  YAML 不允许重复的顶层键，直接报错。
+- **同一组列表的缩进必须一致。** `- https://1.1.1.1/...` 前面 3 个空格、
+  下一行 4 个空格，就会报「不是有效的 YAML」。
+- **粘贴，别手打。**
+
+**Clash by Hako 的额外前提**：这个客户端启动时会强制检查 GeoIP 数据文件
+（`geoip.metadb`），**缺了就拒绝启动，跟你用不用 GEOIP 规则无关**，报错是
+`required GeoIP geodata is not pre-staged`。这个文件由 App 按自己的周期
+自动下载，而 `NE downloads are disabled` 意味着 **VPN 开着的时候下不了**。
+所以：先断开它，用别的网络联网，在「更多 → 客户端设置」确认两个「自动更新」
+开关是开的，把 App 放前台等几分钟，再连。
+
 ### 4.1 分流建议
 
-如果客户端支持规则模式（Hiddify / Shadowrocket 都支持），建议：
+如果客户端支持规则模式（Hiddify / Shadowrocket 都支持），能用内置规则集就用，
+不需要自己写：
 
 ```text
 中国大陆网站 / 私网地址  →  直连
 其他                     →  走节点
 ```
 
-用客户端内置的规则集就行，不需要自己写。这样国内 App 不受影响，也省流量。
+**先想清楚这个取舍：**
+
+| | 速度 | 泄露风险 |
+|---|---|---|
+| `MATCH,PROXY` 全走代理 | 国内 App 慢（绕一圈） | 零 |
+| 加国内直连规则 | 国内 App 恢复原速 | 重新引入「分流误判」 |
+
+对国内 App 来说这个风险其实无所谓——**淘宝微信本来就知道你在哪**。真正要保护的
+目标不在直连名单里，照样走节点。但**全走代理确实是最安全的**，先跑几天看哪些
+App 慢得受不了，再按需要加规则，比一上来贴一大串精准。
+
+**另外注意**：开着全局代理时，**银行、支付类 App 可能触发异地风控**，用之前
+先断开比较稳妥。视频/音乐类可能因版权显示「地区不可用」。
+
+**没有 GeoIP 数据也能做国内直连**——用域名后缀就行，不依赖任何数据文件：
+
+```yaml
+rules:
+  - DOMAIN-SUFFIX,cn,DIRECT          # 一条顶几百条
+  - DOMAIN-SUFFIX,qq.com,DIRECT
+  - DOMAIN-SUFFIX,tencent.com,DIRECT
+  - DOMAIN-SUFFIX,taobao.com,DIRECT
+  - DOMAIN-SUFFIX,tmall.com,DIRECT
+  - DOMAIN-SUFFIX,alipay.com,DIRECT
+  - DOMAIN-SUFFIX,alicdn.com,DIRECT
+  - DOMAIN-SUFFIX,jd.com,DIRECT
+  - DOMAIN-SUFFIX,baidu.com,DIRECT
+  - DOMAIN-SUFFIX,bilibili.com,DIRECT
+  - DOMAIN-SUFFIX,hdslb.com,DIRECT
+  - DOMAIN-SUFFIX,163.com,DIRECT
+  - DOMAIN-SUFFIX,126.net,DIRECT
+  - DOMAIN-SUFFIX,douyin.com,DIRECT
+  - DOMAIN-SUFFIX,bytedance.com,DIRECT
+  - DOMAIN-SUFFIX,weibo.com,DIRECT
+  - DOMAIN-SUFFIX,xiaohongshu.com,DIRECT
+  - DOMAIN-SUFFIX,meituan.com,DIRECT
+  - MATCH,PROXY                       # 兜底必须放最后
+```
+
+`DOMAIN-SUFFIX,cn,DIRECT` 覆盖所有 `.cn` 域名，性价比最高。
+
+> `DIRECT` 作为**规则目标**始终可用，和 §4.2 里说的「把 `DIRECT` 从
+> proxy-group 里删掉」不冲突——删的是**手动切换**这个后门，规则里的
+> 定向直连是你明确指定的行为。
 
 ---
 
@@ -415,25 +516,116 @@ Hiddify、NekoBox、Shadowrocket 都有这个开关。
 > 后者是共享 IP 造成的，只能靠换成独享出口解决。
 > 网络锁开着 ≠ 你的 IP 问题已经解决。
 
+#### ⚠️ iOS 上多半找不到这个开关，别白翻
+
+**先省掉你几十分钟：iOS 上没有真正的 Kill Switch。**
+
+- 系统级的「始终开启 VPN / 阻止没有 VPN 的连接」是 **Android 独有**，
+  iOS 的同类能力只对 MDM 托管设备开放，普通用户拿不到；
+- Apple 开发者论坛里长期讨论过这个限制，商业 VPN 在 iOS 上标榜的
+  「网络锁」，**多数只是启用了「按需连接」**，不是真的阻断流量；
+- 「按需连接」这个开关，只对 IKEv2/IPsec 那类系统 VPN 配置显示。
+  NetworkExtension 类客户端（Clash / sing-box / Hako 这些）的配置页里
+  只会写「若要配置设置，请使用 XX 应用程序」，**没有这个开关**；
+- 而客户端自己有没有实现，要看各家。实测 Clash by Hako 没有。
+
+**所以 iOS 上能做的是另外两件事：**
+
+**① 用配置本身当 Kill Switch**（能控制的部分）
+
+把 `DIRECT` 从 proxy-group 里删掉，只留节点：
+
+```yaml
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - my-hy2        # 不要再列 DIRECT
+```
+
+`DIRECT` 一旦在组里，就存在「切过去直连」的可能。删掉之后这个选项不存在，
+规则里也只有 `MATCH,PROXY`，就没有任何一条路径能把流量送去直连。
+
+**② 实测一次，别靠猜**（没法控制的部分）
+
+文档、设置页、客服说什么都不算数，制造一次真实断线看结果最快。做法见下方
+「断线实测」。
+
+> 实测结论（Clash by Hako + Hysteria2 + iOS）：**节点停掉后网页直接打不开，
+> 不会回落直连**。也就是说效果已经是对的，只是没有一个开关告诉你而已。
+> 你自己的组合仍然要自己测一遍。
+
 ### 泄露途径四：WebRTC / DNS
 
-- **WebRTC**：主要影响浏览器，可能暴露本机地址。用 `ippure.com` 的「泄露检测」
-  一栏自查——显示的应该是节点 IP，不是你的真实 IP。
+- **WebRTC**：主要影响浏览器，可能暴露本机地址。用 `browserleaks.com/webrtc`
+  自查——它会直接给「No Leak」或者列出泄露的地址，比笼统的评分清楚得多。
 - **DNS**：暴露的是你用的 DNS 服务器，**不直接暴露你的 IP**，危害低一级。
-  开启客户端的「DNS 走代理 / Remote DNS」即可。
+  用 `browserleaks.com/dns` 看检测到的 DNS 服务器**归属哪家**：
+  全是你 VPS 服务商的 → 解析在服务端做的，没漏；
+  出现你本地运营商的 → 漏了。
+
+**配置里也别留国内 DNS。** 在 `fake-ip` + 全量代理的组合下它们几乎不会被用到，
+但留着就是个隐患——万一某条路径绕过 fake-ip，查询就发给它们了：
+
+```yaml
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://1.1.1.1/dns-query      # 加密 DNS，查询内容中间人也看不到
+    - https://8.8.8.8/dns-query
+```
+
+### 泄露途径五：UDP 兜底回落
+
+mihomo 系客户端有一个「UDP 兜底」设置，用来处理**出口扛不住 UDP** 时的流量。
+它的默认档位可能是「带着你自己的地址经 DIRECT 出门」——**那就是直接泄露**。
+
+选最严格的那一档（通常叫「拒绝全部落到兜底的 UDP」）。
+
+> **用 Hysteria2 / TUIC 的话这一档不会被触发**——这些协议本身就承载 UDP，
+> 流量正常命中规则，走不到兜底。所以它对你是零代价的保险：设上没有副作用，
+> 万一以后换了不支持 UDP 的线路，自动不泄漏。
 
 ### 配好之后自查一遍
 
-打开手机浏览器访问 `ippure.com`，逐项确认：
+用 `browserleaks.com` 和 `ipleak.net` 交叉验证，逐项确认：
 
-- [ ] `My IP` = 你 VPS 的 IP（不是运营商的）
-- [ ] `WebRTC 泄露` = 同一个 VPS IP
-- [ ] 页面上没有出现任何 IPv6 地址（有的话说明 IPv6 没接管）
-- [ ] 客户端已开启「阻止未匹配流量 / Kill Switch」
-- [ ] 客户端已开启「DNS 走代理」
+- [ ] IP = 你 VPS 的 IP（不是运营商的）
+- [ ] WebRTC 明确显示 **No Leak**，Local IP 为空
+- [ ] 页面上没有任何 IPv6 地址
+- [ ] DNS 检测出的服务器**全部归属你的 VPS 服务商**
+- [ ] 客户端「UDP 兜底」已设为最严格档
+- [ ] proxy-group 里没有 `DIRECT`
 
-顺手再测一下断线行为：手动断开节点，看手机是否**立刻断网**。
-如果断开后还能正常上网，说明 Kill Switch 没生效，回去检查设置。
+### 🔬 断线实测（唯一能确定 Kill Switch 有没有效的办法）
+
+设置页写什么、客服说什么都不算数。**制造一次真实断线，三分钟出答案。**
+
+**① 在服务器上停掉节点**（SSH 是另一个服务，不受影响）：
+
+```bash
+systemctl stop hysteria-server
+```
+
+**② 立刻在手机 / 平板上打开任意网页**
+
+**③ 看结果：**
+
+| 现象 | 结论 |
+|---|---|
+| 打不开 / 一直转圈 | ✅ **不会泄露**。断了就断了，不会回落直连 |
+| 正常打开，且显示你的真实 IP | 🔴 **会泄露**。需要换一个实现了按需连接的客户端 |
+
+**④ 恢复：**
+
+```bash
+systemctl start hysteria-server
+```
+
+> 这个测试比任何设置项都可靠，**换客户端、换配置之后都值得重跑一遍**。
 
 ### 漏了一次会不会直接封号？
 
