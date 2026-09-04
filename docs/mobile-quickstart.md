@@ -180,8 +180,18 @@ chmod 600 ~/.ssh/authorized_keys
 在已经连上的 SSH 窗口里，粘贴这一行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mia06250603ian/personal-edge-proxy/main/scripts/install-hy2.sh -o install-hy2.sh && bash install-hy2.sh
+curl -fsSL https://raw.githubusercontent.com/mia06250603ian/personal-edge-proxy/main/scripts/install-hy2-official.sh -o hy2.sh && bash hy2.sh
 ```
+
+> **为什么用 `install-hy2-official.sh` 而不是 `install-hy2.sh`？**
+>
+> 仓库里有两个脚本。`install-hy2.sh` 走 Xray 的 hysteria inbound，
+> 实机验证下来**不可用**：`xray run -test` 通过、systemd 报告服务
+> `active`、日志一个错都不报，但 `ss -ulnp` 显示**根本没有绑定 UDP 端口**
+> （Xray 26.3.27 的已知问题，见 XTLS/Xray-core #5921、#5619）。
+>
+> `install-hy2-official.sh` 装的是 hysteria.network 的**官方服务端**，
+> 没有这个问题。两个脚本产出的客户端链接格式完全一样。
 
 > 养成习惯：**先下载再执行**，而不是 `curl ... | bash`。
 > 这样你随时可以 `cat install-hy2.sh` 看它到底干了什么。
@@ -515,6 +525,48 @@ systemctl status xray
 - **显示 `active (running)`** → 服务端没问题，问题在网络或客户端，看 6.3
 - **显示 `failed`** → 服务端问题，看 6.2
 
+### 6.1.5 ⚠️ 服务 active 不等于端口在监听
+
+这是最容易骗过人的一种故障，实机踩过：
+
+```text
+systemctl is-active xray   →  active     ✅ 看起来没问题
+journalctl -u xray         →  无任何报错  ✅ 看起来没问题
+ss -ulnp | grep 24443      →  空的        ❌ 根本没在监听
+```
+
+**服务进程活着，不代表它成功监听了端口。** 遇到"客户端连不上"时，
+**第一件事永远是查监听**，而不是去调客户端：
+
+```bash
+ss -ulnp | grep 24443
+```
+
+- **有输出** → 服务端 OK，往客户端 / 网络方向查（6.3）
+- **没输出** → 服务端问题，别再动客户端了
+
+仓库的两个安装脚本现在都会在启动后主动轮询 `ss`，不监听就直接报错退出，
+不会再假报成功。
+
+### 6.1.6 Hysteria2 官方服务端起不来：permission denied
+
+```text
+FATAL failed to read server config
+{"error": "open /etc/hysteria/config.yaml: permission denied"}
+```
+
+官方 systemd 单元以非特权的 `hysteria` 用户运行，配置和证书如果是
+`root:root 600`，服务读不了自己的配置。**注意它是在 systemd 报告
+"Started" 之后才失败的**，所以 `systemctl status` 一闪而过很容易看漏。
+
+修复：
+
+```bash
+chown -R hysteria:hysteria /etc/hysteria
+systemctl restart hysteria-server
+ss -ulnp | grep 24443
+```
+
 ### 6.2 服务端起不来
 
 ```bash
@@ -566,6 +618,60 @@ vnstat -m 2>/dev/null || echo "vnstat 未安装：apt install -y vnstat"
 
 如果服务器负载正常、流量没超，那是**线路问题**，跟你的配置无关——
 这是 VPS 商家的锅，考虑换商家或换地区。
+
+### 6.4.5 iOS 上的几个坑（实机踩过）
+
+**SSH 连不上，报 `unknown node or service`**
+
+主机名里混进了多余字符。复制 IP 时很容易把行尾的空格或标点一起带进去
+（实机遇到过 `"139.180.136.175 #"`）。看报错里引号中间的内容，
+**手动重打一遍 IP**，确认前后没有空格。
+
+**SSH 密码怎么输都是 `Authentication failed`**
+
+iOS 键盘会偷偷改写你输入的密码：
+
+| 功能 | 干了什么 |
+|---|---|
+| 自动大写 | 把首字母改成大写 |
+| 智能标点 | 把 `'` `"` `-` 换成外观相似的弯引号 / 长破折号 |
+| 自动更正 | 整段替换 |
+
+**关掉它们**：`设置 → 通用 → 键盘` → 关闭「自动大写」「自动更正」「智能标点」。
+
+密码框显示的是圆点，打错了看不见，所以更稳的做法是**先在备忘录里打出来
+（可见）核对，再复制粘贴**。跨 App 粘贴时留意 iOS 顶部的
+「"XX"想粘贴自"YY"」弹窗——点了「不允许」就会一直粘不进去。
+
+**终端里删不掉打错的命令**
+
+已经回车执行过的行是历史输出，删不掉也不需要删。只有当前输入行才能编辑。
+
+### 6.4.6 Clash / mihomo 客户端的坑
+
+**`The core refused this configuration: required GeoIP geodata is not pre-staged`**
+
+配置里用了 `GEOIP,CN,DIRECT`，但客户端没有 GeoIP 数据库。
+先在客户端里找地理数据下载入口；找不到就把这条规则删掉，只留
+`- MATCH,PROXY`（相当于全局模式，代价是国内站点也绕一圈）。
+
+**`这不是有效的 YAML`**
+
+多半是把新配置**粘到了文件末尾**，导致 `proxies:` 出现两次。
+YAML 不允许重复的顶层键。**同一个键全文件只能有一个**，
+修改节点参数要在原来那块里改，不是另起一段。
+
+**速度偏慢**
+
+给 hysteria2 节点显式指定带宽，通常有明显提升：
+
+```yaml
+    up: "30 Mbps"
+    down: "150 Mbps"
+```
+
+填**接近真实带宽**的值：填太高会丢包反而更慢，填太低会卡上限。
+先测一次基准（`fast.com`），改完再测一次，**一次只改一处**才知道哪个有效。
 
 ### 6.5 换了新 VPS 还是频繁弹验证
 
