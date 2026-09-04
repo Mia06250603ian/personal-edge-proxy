@@ -17,6 +17,12 @@
 #   bash install-hy2.sh --port 24443
 #   bash install-hy2.sh --port 24443 --sni www.bing.com
 #
+# 指定节点密码（不指定则随机生成）。适合无人值守场景，例如把本脚本
+# 挂到云服务商的「启动脚本 / user-data」里：密码是你自己定的，
+# 于是不需要登录服务器也能拼出客户端链接。
+#
+#   bash install-hy2.sh --password 'YourNodePassword'
+#
 # 卸载：
 #
 #   bash install-hy2.sh --uninstall
@@ -25,6 +31,7 @@ set -euo pipefail
 
 PORT=24443
 SNI="www.bing.com"
+PASSWORD=""
 CERT_DIR="/etc/xray/certs/self"
 CONFIG="/usr/local/etc/xray/config.json"
 UNINSTALL=0
@@ -37,6 +44,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --port)      PORT="${2:?--port 需要一个端口号}"; shift 2 ;;
     --sni)       SNI="${2:?--sni 需要一个域名}";     shift 2 ;;
+    --password)  PASSWORD="${2:?--password 需要一个密码}"; shift 2 ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help)   sed -n '2,30p' "$0"; exit 0 ;;
     *)           die "未知参数：$1（用 --help 查看用法）" ;;
@@ -107,8 +115,19 @@ chown -R nobody:nogroup "$CERT_DIR" 2>/dev/null || chown -R nobody:nobody "$CERT
 
 # ---------------------------------------------------------------- 4. 配置
 
-PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)"
-[ -n "$PASSWORD" ] || die "生成密码失败"
+if [ -n "$PASSWORD" ]; then
+  # 只接受字母数字和一小撮安全符号：密码会被写进 JSON 配置和分享链接，
+  # 引号 / 反斜杠 / @ / # 之类会破坏其中之一。
+  case "$PASSWORD" in
+    *[!A-Za-z0-9._-]*) die "--password 只能包含字母、数字和 . _ - （避免破坏配置与分享链接）" ;;
+  esac
+  [ "${#PASSWORD}" -ge 8 ] || die "--password 至少 8 位"
+  log "使用指定的节点密码"
+else
+  PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)"
+  [ -n "$PASSWORD" ] || die "生成密码失败"
+  log "已随机生成节点密码"
+fi
 
 if [ -f "$CONFIG" ]; then
   BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
