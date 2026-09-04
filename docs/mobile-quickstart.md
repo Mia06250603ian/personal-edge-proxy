@@ -305,10 +305,6 @@ UDP 24443    HY2      ← 最容易漏掉的就是这条
 >
 > 折中做法：**先用免费客户端验证节点是否正常，确认可用后再决定是否换成付费老牌客户端。**
 
-**sing-box 注意事项**：官方文档写明他们目前**无法在 App Store 更新**
-（审核误判违规），TestFlight 名额仅限赞助者。App Store 上的版本可能偏旧。
-上架名称近期有变动（`sing-box-vt` / `sing-box MT`），**认准开发者是 SagerNet**。
-
 > 🚧 **iOS 的真正门槛**：以上应用**全部已从中国大陆区 App Store 下架**，
 > 需要一个**非中国大陆的 Apple ID**（sing-box 官方也明确要求这一条）。
 > 注册外区 Apple ID 免费，但要额外花约 20 分钟。
@@ -380,6 +376,82 @@ rules:
 自动下载，而 `NE downloads are disabled` 意味着 **VPN 开着的时候下不了**。
 所以：先断开它，用别的网络联网，在「更多 → 客户端设置」确认两个「自动更新」
 开关是开的，把 App 放前台等几分钟，再连。
+
+### 4.0.6 sing-box：参考配置
+
+sing-box **也不认 `hysteria2://` 分享链接**，它只吃 JSON 配置。新建一个「本地」
+配置，把下面这份贴进去（只改密码）：
+
+```json
+{
+  "log": { "level": "info" },
+  "dns": {
+    "servers": [
+      {
+        "type": "https",
+        "tag": "dns-proxy",
+        "server": "1.1.1.1",
+        "detour": "proxy"
+      }
+    ],
+    "strategy": "ipv4_only"
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": ["172.19.0.1/30"],
+      "auto_route": true,
+      "strict_route": true,
+      "stack": "gvisor"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "proxy",
+      "server": "YOUR_SERVER_IP",
+      "server_port": 24443,
+      "password": "YOUR_HY2_PASSWORD",
+      "up_mbps": 30,
+      "down_mbps": 150,
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "insecure": true
+      }
+    },
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "proxy"
+  }
+}
+```
+
+**和 Clash 那份是一一对应的：**
+
+| Clash (YAML) | sing-box (JSON) |
+|---|---|
+| `skip-cert-verify: true` | `"insecure": true` |
+| `sni: www.bing.com` | `"server_name": "www.bing.com"` |
+| `up` / `down` | `"up_mbps"` / `"down_mbps"` |
+| `ipv6: false` | `"strategy": "ipv4_only"` |
+| `rules: - MATCH,PROXY` | `"route": { "final": "proxy" }` |
+
+**⚠️ DNS 格式在 1.12 变过**。报这个错说明你用的是新版：
+
+```text
+decode config: dns.servers[0]: legacy DNS server formats are deprecated
+in sing-box 1.12.0 and removed in sing-box 1.14.0
+```
+
+旧写法是 `"address": "https://1.1.1.1/dns-query"`，新写法拆成
+`"type": "https"` + `"server": "1.1.1.1"`。上面这份用的是**新写法**。
+
+> **保存键点了变灰是正常的**——蓝色表示有未保存的改动，灰色表示已保存。
+> 不是失败。
 
 ### 4.1 分流建议
 
@@ -554,6 +626,21 @@ proxy-groups:
 > 实测结论（Clash by Hako + Hysteria2 + iOS）：**节点停掉后网页直接打不开，
 > 不会回落直连**。也就是说效果已经是对的，只是没有一个开关告诉你而已。
 > 你自己的组合仍然要自己测一遍。
+
+**③ 换个客户端，有的确实提供了这个能力**
+
+上面说的「iOS 没有」指的是**系统级**和**多数客户端**。个别客户端在自己的
+隧道实现里做了等效的东西，例如 sing-box 的 TUN 入站：
+
+```json
+"strict_route": true
+```
+
+严格路由会阻止流量绕过隧道，比「配置里没有 DIRECT」更靠前一层。
+Clash by Hako 没有对应选项。**如果你很在意这一项，这是选 sing-box
+而不是 Hako 的一个实际理由**（配置见 §4.0.6）。
+
+换完仍然要重跑一次断线实测——**开关写在配置里不等于它生效了。**
 
 ### 泄露途径四：WebRTC / DNS
 
@@ -906,22 +993,93 @@ WARP 出口  =  Cloudflare 共享池
 
 ---
 
-## 8. 日常维护
+## 8. 长期运维：真正会坑到你的几件事
 
-一个月做一次就够：
+搭好只是开始。下面按「实际发生概率」排序，不是按技术难度。
 
-```bash
-# 系统更新
-apt update && apt upgrade -y
+### 🔴 8.1 余额耗尽 —— 最可能真实发生的一件事
 
-# 升级 Xray（配置会保留）
-bash -c "$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-
-systemctl restart xray
+```text
+余额归零
+  ↓
+服务商暂停实例 → 一段时间后销毁
+  ↓
+你辛苦挑出来的那个 IP 被永久回收
+  ↓
+重新开机、重新验 IP、账号再承受一次 IP 变更
 ```
 
-另外每隔一两个月，去 `ippure.com` 查一次自己的 IP。
-**IP 信誉是动态的**，如果评分明显变差了，找商家换个 IP 就行（换 IP 时同样按第 5 节的流程走）。
+**这不是「可能」，是「不管它就一定会发生」。**
+
+**现在就在手机上建一个每月重复的日历提醒：查余额。** 十秒钟的事，
+挡掉的是整套推倒重来。有自动充值就更好。
+
+### 🔴 8.2 单点：只有一条入口，一条出口
+
+只部署 HY2 的话，**入口只有 UDP 一条**。任何一条断了就是全断：
+
+| 情况 | 后果 |
+|---|---|
+| 运营商限速 / 封锁 UDP | 节点时好时坏，或直接不通 |
+| 这个 IP 被封 | 完全连不上 |
+| 实例故障 | 全断 |
+
+**旧机场没退之前，它就是你的后备。退掉那天起，你就没有安全绳了。**
+
+所以：**在退掉旧线路之前，给同一台服务器加一条 TCP 入口**
+（VLESS + REALITY，走 443）。要点：
+
+```text
+入口（怎么进服务器）  →  多一条
+出口（用什么身份上网）→  完全不变，同一个 IP
+```
+
+**加备用入口不会改变出口身份，对账号零影响**——这正是 README 反复强调的
+「入口和出口是两回事」。成本也是零：同一台机器，不用加钱。
+
+### 🟠 8.3 流量配额
+
+便宜套餐通常含 1–2 TB/月（去实例页面确认你的额度）。超了会限速或产生额外费用。
+大量看视频的话值得留意。
+
+```bash
+vnstat -m 2>/dev/null || apt install -y vnstat
+```
+
+### 🟠 8.4 密码轮换
+
+节点密码等于钥匙。**只要它在任何地方出现过——截图、聊天、群里——就该换。**
+
+```bash
+# 随机生成并直接应用，不用自己想也不会填错
+NEWPASS=$(openssl rand -hex 12) && bash hy2.sh --password "$NEWPASS"
+```
+
+换完把输出里的新密码更新到每一个客户端（Clash 的 `password:`、
+sing-box 的 `"password"`）。
+
+> 脚本不带 `--password` 重跑时会**沿用现有密码**，所以加固、改端口这类操作
+> 不会误伤已配好的客户端。要换密码必须显式传 `--password`。
+
+> ⚠️ 命令里的中文占位符**记得替换**。直接把 `--password '你的新密码'`
+> 原样粘进去，脚本会拒绝（中文不在允许字符集里）——这是正常的保护。
+
+### 🟡 8.5 例行检查
+
+```bash
+# 系统更新（装了 harden-server.sh 的话安全补丁已自动，这里是全量）
+apt update && apt upgrade -y
+
+# 服务状态
+systemctl status hysteria-server
+ss -ulnp | grep 24443          # 确认端口真的在监听
+
+# 被封禁的爆破 IP
+fail2ban-client status sshd
+```
+
+每隔一两个月复查一次 IP 信誉（`scamalytics.com/ip/你的IP`）。
+**IP 信誉是动态的**，明显变差了就换个 IP，换的时候同样按第 5 节的流程走。
 
 ---
 
