@@ -70,10 +70,17 @@ if [ -n "$PASSWORD" ]; then
     *[!A-Za-z0-9._-]*) die "--password 只能包含字母、数字和 . _ - （避免破坏配置与分享链接）" ;;
   esac
   [ "${#PASSWORD}" -ge 8 ] || die "--password 至少 8 位"
+elif [ -f "$CONFIG" ] && grep -qE '^[[:space:]]*password:[[:space:]]*\S' "$CONFIG"; then
+  # 重跑脚本（例如为了加固配置）时保留现有密码，否则每次重跑都会让
+  # 已经配好的客户端全部失效。要换密码请显式传 --password。
+  PASSWORD="$(sed -n 's/^[[:space:]]*password:[[:space:]]*//p' "$CONFIG" | head -1 | tr -d '"'\''[:space:]')"
+  [ -n "$PASSWORD" ] || die "从现有配置中读取密码失败"
+  REUSED_PASSWORD=1
 else
   PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)"
   [ -n "$PASSWORD" ] || die "生成密码失败"
 fi
+REUSED_PASSWORD="${REUSED_PASSWORD:-0}"
 
 # ---------------------------------------------------------------- 1. 依赖
 
@@ -120,9 +127,12 @@ chmod 644 "$CERT_DIR/cert.pem"
 
 # ---------------------------------------------------------------- 5. 配置
 
+BACKUP=""
 if [ -f "$CONFIG" ]; then
-  cp "$CONFIG" "${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
-  warn "已备份原有配置"
+  BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+  cp "$CONFIG" "$BACKUP"
+  warn "已备份原有配置到 $BACKUP"
+  [ "$REUSED_PASSWORD" -eq 1 ] && log "沿用现有密码（要换密码请加 --password）"
 fi
 
 log "写入配置：$CONFIG"
@@ -143,6 +153,22 @@ masquerade:
   proxy:
     url: https://${SNI}/
     rewriteHost: true
+
+# 禁止经隧道访问 VPS 所在机房的私网 / 回环 / 链路本地地址。
+# 单人自用时这主要是纵深防御：万一密码外泄，别人也不能拿你的节点
+# 当跳板去探测机房内网。规则按顺序匹配，最后必须有 direct(all) 兜底，
+# 否则匹配不到任何规则的流量会被丢弃。
+acl:
+  inline:
+    - reject(10.0.0.0/8)
+    - reject(172.16.0.0/12)
+    - reject(192.168.0.0/16)
+    - reject(127.0.0.0/8)
+    - reject(169.254.0.0/16)
+    - reject(::1/128)
+    - reject(fc00::/7)
+    - reject(fe80::/10)
+    - direct(all)
 EOF
 
 # 官方 systemd 单元以 hysteria 用户运行，配置文件必须让它读得到。
@@ -169,6 +195,25 @@ fi
 
 # ---------------------------------------------------------------- 7. 启动
 
+# 如果这台机器上已经有一个能用的节点，任何一次改动都不该把它弄挂。
+# 新配置起不来或不监听时，自动恢复到刚才备份的那份并重启，让用户
+# 停在"和改动前一样能用"的状态，而不是一个坏掉的服务。
+rollback() {
+  [ -n "$BACKUP" ] && [ -f "$BACKUP" ] || return 1
+  warn "正在回滚到改动前的配置：$BACKUP"
+  cp "$BACKUP" "$CONFIG"
+  chmod 600 "$CONFIG"
+  id hysteria >/dev/null 2>&1 && chown hysteria:hysteria "$CONFIG"
+  systemctl restart hysteria-server.service 2>/dev/null || true
+  sleep 2
+  if systemctl is-active --quiet hysteria-server.service; then
+    warn "已回滚，节点恢复到改动前的状态（本次加固未生效）"
+  else
+    warn "回滚后服务仍未启动，请手动检查：journalctl -u hysteria-server -n 50"
+  fi
+  return 0
+}
+
 log "启动 hysteria-server"
 systemctl enable hysteria-server.service >/dev/null 2>&1 || true
 systemctl restart hysteria-server.service
@@ -176,6 +221,7 @@ sleep 3
 
 if ! systemctl is-active --quiet hysteria-server.service; then
   journalctl -u hysteria-server.service -n 30 --no-pager >&2 || true
+  rollback || true
   die "hysteria-server 启动失败（详见上面的日志）"
 fi
 
@@ -200,6 +246,7 @@ if [ "$LISTENING" -ne 1 ]; then
   ss -ulnp >&2 || true
   echo "--- 最近日志 ---" >&2
   journalctl -u hysteria-server.service -n 30 --no-pager >&2 || true
+  rollback || true
   die "服务在运行，但没有监听 UDP ${PORT}。请把上面的输出发出来排查。"
 fi
 
