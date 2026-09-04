@@ -400,13 +400,16 @@ personal-edge-proxy/
 ├── LICENSE
 ├── .gitignore
 ├── scripts/
-│   └── install-hy2.sh              一条命令部署 Profile A（HY2 → Direct）
+│   ├── install-hy2-official.sh     一条命令部署 Profile A（官方 HY2 → Direct）
+│   ├── install-hy2.sh              同上的 Xray 版（见脚本内说明，不推荐）
+│   └── harden-server.sh            服务器基础加固（fail2ban / 自动补丁 / BBR）
 ├── examples/
 │   ├── xray-server.example.jsonc
 │   ├── v2rayn-hysteria2.example.md
 │   └── v2rayn-reality-vision.example.md
 └── docs/
     ├── mobile-quickstart.md        手机版最短路径（新手从这里开始）
+    ├── handover-template.md        交接手册模板（搭好之后填一份自己存）
     ├── warp-outbound.md
     └── static-socks.md
 ```

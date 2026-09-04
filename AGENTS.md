@@ -2,6 +2,84 @@
 
 Read this file before editing or deploying the repository.
 
+## 0. Start here — field-verified findings that override older guidance
+
+The rest of this file describes the intended architecture. These items come from
+an end-to-end deployment on real hardware and **take precedence where they
+conflict**. Read them before proposing a plan.
+
+### 0.1 Do not deploy Hysteria2 via Xray
+
+`§9` still lists "current Xray supports Hysteria2" among its assumptions. Xray
+26.3.27 does advertise a `hysteria` inbound, but on a clean Ubuntu 24.04 host it
+does not work, and it fails in the way that costs the most time:
+
+```text
+xray run -test          → passes
+systemctl is-active     → active
+journalctl -u xray      → clean startup, no error at all
+ss -ulnp | grep <port>  → nothing
+```
+
+The service is alive and never binds the port. Upstream has open defects here
+(XTLS/Xray-core #5921, #5619). Because this presents as "the client can't
+connect", it gets chased on the client side for a long time.
+
+**Deploy Hysteria2 with the upstream hysteria.network server instead**
+(`scripts/install-hy2-official.sh`). `scripts/install-hy2.sh` is retained as the
+Xray-native reference in case upstream fixes this; it now refuses to report
+success when the port is unbound.
+
+### 0.2 An active unit is not evidence a port is bound
+
+Generalised from the above. For any "client cannot connect" report, **check the
+listener first**, before touching client config:
+
+```bash
+ss -ulnp | grep <port>
+```
+
+Both install scripts poll `ss` after start and fail loudly if nothing is
+listening. Preserve that behaviour in anything you add.
+
+### 0.3 Profile A is the right default for a stable-exit goal
+
+`§2` presents Profile C/D (WARP, fixed SOCKS5) as the preferred AI profile. That
+holds when the goal is *changing* egress identity per service. When the stated
+goal is **one stable, unshared exit** — the common case for account continuity —
+Profile A is correct and WARP is counterproductive: its exit pool is shared and
+rotates, which is exactly what such a user is leaving behind.
+
+Ask which goal applies before recommending a profile.
+
+### 0.4 Client-side reality on iOS
+
+- iOS has **no user-accessible kill switch**. Always-on VPN is Android-only;
+  on-demand only surfaces for IKEv2/IPsec profiles. Do not send a user hunting
+  for a toggle. Use config (no `DIRECT` in the proxy group), prefer a client
+  that implements `strict_route` (sing-box does, Clash by Hako does not), and
+  **verify by stopping the server and observing whether pages still load**.
+- Neither mihomo nor sing-box clients accept `hysteria2://` share links. They
+  need a config; reference configs are in `docs/mobile-quickstart.md` §4.0.5
+  and §4.0.6.
+- A phone-only operator has no working recovery console. Never propose
+  disabling SSH password auth, and treat lockout risk as higher than it looks.
+
+### 0.5 Where things live now
+
+| Need | File |
+|---|---|
+| Deploy (recommended) | `scripts/install-hy2-official.sh` |
+| Deploy (Xray, see 0.1) | `scripts/install-hy2.sh` |
+| Server hardening | `scripts/harden-server.sh` |
+| Phone-only walkthrough, troubleshooting | `docs/mobile-quickstart.md` |
+| Record a specific deployment | `docs/handover-template.md` |
+
+**If a user has a filled-in handover doc, ask for it before diagnosing
+anything.** It carries their IP, what was installed, what was deliberately
+skipped, and which failures were already ruled out. It is deliberately not in
+this repo — it contains secrets.
+
 ## 1. Core model
 
 Keep the architecture separated into two independent layers:
@@ -389,7 +467,8 @@ Prefer current official Xray docs over copied blog configs or remembered product
 
 Current assumptions:
 
-- current Xray supports Hysteria2;
+- current Xray documents a Hysteria2 inbound, but see §0.1 — it does not work
+  in practice on 26.3.27; deploy HY2 with the upstream server instead;
 - Hysteria version is 2;
 - HY2 is the primary entry;
 - REALITY/Vision is optional backup;
@@ -412,6 +491,11 @@ examples/v2rayn-reality-vision.example.md
                                        v2rayN / Xray REALITY client example
 docs/warp-outbound.md                  WARP egress behavior and validation
 docs/static-socks.md                   fixed SOCKS5 egress behavior
+docs/mobile-quickstart.md              phone-only Profile A walkthrough + troubleshooting
+docs/handover-template.md              template for recording a specific deployment
+scripts/install-hy2-official.sh        recommended HY2 deploy (upstream server)
+scripts/install-hy2.sh                 Xray-native HY2 deploy (see §0.1 before using)
+scripts/harden-server.sh               fail2ban / unattended-upgrades / BBR
 ```
 
 Synchronization rules:
