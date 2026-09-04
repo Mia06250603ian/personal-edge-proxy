@@ -235,6 +235,33 @@ if ! systemctl is-active --quiet xray; then
   die "Xray 启动失败（详见上面的日志）"
 fi
 
+# 服务活着 ≠ 端口在听。Xray 26.3.x 的 hysteria inbound 有已知问题
+# （XTLS/Xray-core #5921、#5619）：实测出现过服务 active、配置也通过
+# xray -test，但根本没有绑定 UDP 端口、日志里也不报错的情况。
+# 所以这里必须真的去看一眼监听状态，否则脚本会假报成功。
+log "验证 UDP ${PORT} 是否在监听"
+command -v ss >/dev/null 2>&1 || apt-get install -y -qq iproute2 >/dev/null 2>&1 || true
+LISTENING=0
+for _ in 1 2 3 4 5; do
+  if ss -ulnp 2>/dev/null | grep -q ":${PORT}[[:space:]]"; then
+    LISTENING=1
+    break
+  fi
+  sleep 1
+done
+
+if [ "$LISTENING" -ne 1 ]; then
+  echo "--- ss -ulnp ---" >&2
+  ss -ulnp >&2 || true
+  echo "--- 最近日志 ---" >&2
+  journalctl -u xray -n 30 --no-pager >&2 || true
+  die "Xray 在运行，但没有监听 UDP ${PORT}。
+这多半是 Xray 的 hysteria inbound 问题，不是你的配置写错了。
+改用官方 Hysteria2 服务端：bash scripts/install-hy2-official.sh"
+fi
+
+log "确认监听中 ✓"
+
 # ---------------------------------------------------------------- 7. 输出
 
 SERVER_IP=""
