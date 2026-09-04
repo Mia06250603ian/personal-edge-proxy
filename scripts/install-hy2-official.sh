@@ -144,7 +144,17 @@ masquerade:
     url: https://${SNI}/
     rewriteHost: true
 EOF
+
+# 官方 systemd 单元以 hysteria 用户运行，配置文件必须让它读得到。
+# 只 chmod 600 而不改属主的话，服务会以
+#   FATAL failed to read server config ... permission denied
+# 退出——而且是在 systemd 报告启动之后才失败。
 chmod 600 "$CONFIG"
+if id hysteria >/dev/null 2>&1; then
+  chown hysteria:hysteria "$CONFIG"
+else
+  warn "未找到 hysteria 用户，配置属主保持 root"
+fi
 
 # ---------------------------------------------------------------- 6. 防火墙
 
