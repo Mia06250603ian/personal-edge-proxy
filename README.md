@@ -4,6 +4,11 @@
 
 [给 AI / Agent 的维护与部署说明 → `AGENTS.md`](./AGENTS.md)
 
+> **只有手机、想尽快换掉不稳定的机场？**
+> 直接看 [`docs/mobile-quickstart.md`](./docs/mobile-quickstart.md)：
+> 全程手机操作，一条命令部署 HY2，含选购验 IP、平滑迁移和排错。
+> 那份文档只做下面的 A 档，够用就停。
+
 ## 先说结论：我自己怎么选
 
 如果只是想“能用”，一条 HY2 就够。
@@ -394,11 +399,14 @@ personal-edge-proxy/
 ├── AGENTS.md
 ├── LICENSE
 ├── .gitignore
+├── scripts/
+│   └── install-hy2.sh              一条命令部署 Profile A（HY2 → Direct）
 ├── examples/
 │   ├── xray-server.example.jsonc
 │   ├── v2rayn-hysteria2.example.md
 │   └── v2rayn-reality-vision.example.md
 └── docs/
+    ├── mobile-quickstart.md        手机版最短路径（新手从这里开始）
     ├── warp-outbound.md
     └── static-socks.md
 ```
