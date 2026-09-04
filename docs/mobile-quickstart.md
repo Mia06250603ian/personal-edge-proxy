@@ -240,12 +240,45 @@ UDP 24443    HY2      ← 最容易漏掉的就是这条
 
 ## 4. 手机客户端
 
-| 系统 | 推荐 App | 价格 |
+### Android
+
+| App | 价格 | 说明 |
 |---|---|---|
-| Android | **Hiddify** 或 **NekoBox for Android** | 免费 |
-| Android | v2rayNG（较新版本支持 HY2） | 免费 |
-| iOS | **Shadowrocket** | 约 $2.99，需美区 Apple ID |
-| iOS | Stash / Loon | 付费 |
+| **Hiddify** 或 **NekoBox for Android** | 免费 | 推荐 |
+| v2rayNG（较新版本支持 HY2） | 免费 | 也可以 |
+
+### iOS
+
+**iOS 上没有官方的 Clash 客户端。** App Store 里那些叫「Clash Plus」「Clash Mi」
+之类的应用，多来自机场推广渠道，来源不明。
+
+> ⚠️ **代理 App 能看到你的全部流量。** 不要安装来路不明的套壳应用——
+> 那个风险比脏 IP 大得多。
+
+可用的三个：
+
+| App | 价格 | HY2 | 说明 |
+|---|---|---|---|
+| **Stash** | 约 $4.99–5.99 买断 | ✅ | iOS 上最成熟的 mihomo（Clash.Meta）前端，Clash 生态的正解 |
+| **Shadowrocket** | 约 $2.99 买断 | ✅ | 最老牌，中文教程最多，排错最容易 |
+| **sing-box (SFI)** | 免费 | ✅ 原生 | 官方出品，但见下方注意事项 |
+
+都是一次性买断，非订阅，同一 Apple ID 全设备通用。
+
+**怎么选：**
+
+- 想要 Clash 的规则生态 → **Stash**
+- 只想稳定连上、少折腾 → **Shadowrocket**
+
+如果你只有一个节点，其实用不到 Clash 的复杂分流能力，Shadowrocket 就够。
+
+**sing-box 注意事项**：官方文档写明他们目前**无法在 App Store 更新**
+（审核误判违规），TestFlight 名额仅限赞助者。App Store 上的版本可能偏旧。
+上架名称近期有变动（`sing-box-vt` / `sing-box MT`），**认准开发者是 SagerNet**。
+
+> 🚧 **iOS 的真正门槛**：以上应用**全部已从中国大陆区 App Store 下架**，
+> 需要一个**非中国大陆的 Apple ID**（sing-box 官方也明确要求这一条）。
+> 注册外区 Apple ID 免费，但要额外花约 20 分钟。
 
 **导入步骤（各家大同小异）：**
 
