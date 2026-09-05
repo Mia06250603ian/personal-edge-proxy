@@ -65,12 +65,54 @@ Ask which goal applies before recommending a profile.
 - A phone-only operator has no working recovery console. Never propose
   disabling SSH password auth, and treat lockout risk as higher than it looks.
 
-### 0.5 Where things live now
+### 0.5 A healthy server is not a working path — and phone terminals lie
+
+From a live "the node suddenly died" incident where the server turned out to be
+entirely healthy. Establish these four before touching any config:
+
+```bash
+systemctl is-active hysteria-server                 # active
+ss -ulnp | grep <port>                              # bound  (see 0.2)
+curl -4 -m 8 https://api.ipify.org; echo            # egress works, IP unchanged
+journalctl -u hysteria-server -n 30 --no-pager -o cat
+```
+
+Then read the log, because it names the failing layer directly:
+
+- `client connected` present → the packets arrive and auth succeeds. The config
+  is not the problem; the UDP path is. `no recent network activity` is quic-go's
+  idle timeout, i.e. the client's datagrams stopped arriving. Remedies in cost
+  order: change port → Salamander obfs → REALITY TCP inbound.
+- no recent `client connected` at all → packets never arrive; port or protocol
+  is blocked upstream.
+
+Two traps specific to phone-only operators, both of which cost real time:
+
+1. **`systemctl status` / `journalctl` page through `less`.** On a phone this
+   looks like a hung server, and a stray `h` lands in the less help screen.
+   Open every session with `export SYSTEMD_PAGER=cat`, and always pass
+   `--no-pager -o cat` — the default log prefix alone is wider than the screen,
+   so the actual error is scrolled off to the right.
+2. **`curl` prints no trailing newline**, so a successful probe is swallowed by
+   the next prompt and reads as failure. Always append `; echo`.
+
+**Do not conclude "the carrier is blocking UDP" from a test that changed two
+variables** (e.g. iPhone-on-5G vs iPad-on-Wi-Fi). Hold the device constant and
+change only the network, or say the result is inconclusive.
+
+Also: when a user is running their working proxy through an *old provider*,
+testing their self-built node means switching egress IP on a live session.
+That is a real cost to them, not a trivial one — see `docs/mobile-quickstart.md`
+§5. Prefer diagnosis that needs no client switch, and prefer additive
+server-side work (`scripts/add-reality.sh`) that disturbs nothing.
+
+### 0.6 Where things live now
 
 | Need | File |
 |---|---|
 | Deploy (recommended) | `scripts/install-hy2-official.sh` |
 | Deploy (Xray, see 0.1) | `scripts/install-hy2.sh` |
+| Add a TCP backup inbound | `scripts/add-reality.sh` |
 | Server hardening | `scripts/harden-server.sh` |
 | Phone-only walkthrough, troubleshooting | `docs/mobile-quickstart.md` |
 | Record a specific deployment | `docs/handover-template.md` |
@@ -495,6 +537,7 @@ docs/mobile-quickstart.md              phone-only Profile A walkthrough + troubl
 docs/handover-template.md              template for recording a specific deployment
 scripts/install-hy2-official.sh        recommended HY2 deploy (upstream server)
 scripts/install-hy2.sh                 Xray-native HY2 deploy (see §0.1 before using)
+scripts/add-reality.sh                 additive VLESS+REALITY TCP inbound alongside HY2
 scripts/harden-server.sh               fail2ban / unattended-upgrades / BBR
 ```
 

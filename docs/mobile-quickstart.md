@@ -793,12 +793,40 @@ systemctl start hysteria-server
 
 ## 6. 排错
 
+### 6.0 ⚠️ 手机上排错之前，先关掉分页器
+
+**这一步不做，你会卡在一个跟故障毫无关系的界面里出不来。**
+
+`systemctl status` 和 `journalctl` 默认把输出喂给 `less` 分页器。在手机上
+这东西是纯粹的障碍：屏幕窄、没有 Esc 键、误触 `h` 会进入帮助页，看起来
+像是服务器卡死了，其实只是个翻页程序。
+
+**每次 SSH 连上先跑这一条：**
+
+```bash
+export SYSTEMD_PAGER=cat
+```
+
+本次会话内所有 systemd 命令都不再调 `less`。**已经卡进去了**：按 `q`
+（可能要按两次），没反应就直接断开重连，一秒钟的事。
+
+还有一个手机专属技巧——看日志时加 `-o cat`：
+
+```bash
+journalctl -u hysteria-server -n 30 --no-pager -o cat
+```
+
+默认格式每行前面有 `Sep 05 05:15:50 vultr hysteria[13275]:` 这么一大串，
+手机屏幕一行放不下，**真正的报错全被挤到右边看不见**。`-o cat` 只留正文。
+
+本文档后面的命令都按这个写法给。
+
 ### 6.1 先分清是哪一层坏了
 
 在 SSH 里跑：
 
 ```bash
-systemctl status xray
+systemctl status hysteria-server --no-pager
 ```
 
 - **显示 `active (running)`** → 服务端没问题，问题在网络或客户端，看 6.3
@@ -884,6 +912,54 @@ ufw status
 **4. 排除运营商 QoS**：有些移动网络会限制 UDP。测试方法：切到另一个网络
 （比如从 5G 切到 Wi-Fi，或反过来）再试。如果换网就好了，说明是运营商的问题——
 这种情况才需要考虑加 REALITY（走 TCP 443），见 README。
+
+### 6.3.5 日志里有 `client connected`，但客户端还是没网
+
+这说明**握手成功、密码正确、包能到服务器**——问题不在配置。典型日志长这样：
+
+```text
+05:14:43  INFO  client connected     {"addr":"112.36.205.37:20181","id":"user"}
+05:15:50  WARN  TCP error            {"error":"readfrom ...: timeout: no recent network activity"}
+05:15:50  INFO  client disconnected  {"error":"accepting stream failed: timeout: no recent network activity"}
+```
+
+`no recent network activity` 是 **QUIC 的空闲超时**：服务器在等客户端的 UDP
+包，等不到，就把这条连接判死了。连上之后一分钟内断，基本都是这个。
+
+先确认服务器这边是好的（三条都应该正常）：
+
+```bash
+systemctl is-active hysteria-server                    # active
+ss -ulnp | grep 24443                                  # 有输出
+curl -4 -m 8 https://api.ipify.org; echo               # 打印出你的 VPS IP
+```
+
+> ⚠️ `curl` 成功时输出**不带换行**，紧接着就是下一个提示符，在手机上很像
+> "什么都没打印"。所以命令后面一定要跟 `; echo`，否则会把成功误判成失败。
+
+三条都正常 = **服务器健康，是客户端到服务器这段 UDP 路不通或不稳**。常见原因：
+
+| 现象 | 原因 |
+|---|---|
+| 换个网络就好（5G ↔ Wi-Fi） | 运营商在限制 / QoS UDP |
+| 日志里客户端 IP 中途变了 | 移动网络 NAT 映射漂移，QUIC 连接跟着断 |
+| 一直连不上，日志里**没有**新的 `client connected` | 包根本没到，端口或协议被封 |
+
+按成本从低到高处理：
+
+1. **换个端口**（`--port 8443` 或 `--port 443`）。有些运营商是按端口段做 QoS 的。
+2. **开 Salamander 混淆**。HY2 裸 QUIC 特征明显，混淆后看起来就是普通 UDP 流量。
+   服务端 `/etc/hysteria/config.yaml` 加：
+   ```yaml
+   obfs:
+     type: salamander
+     password: 你生成的混淆密码
+   ```
+   **所有客户端都要同步加上同一个密码，否则全部连不上**（sing-box 是
+   `"obfs": {"type":"salamander","password":"..."}`，mihomo 是 `obfs:` +
+   `obfs-password:`）。改之前先 `cp /etc/hysteria/config.yaml{,.bak}`。
+3. **加 REALITY TCP 入口**（`scripts/add-reality.sh`，见 §9）。前两条都是"绕"，
+   运营商真要掐 UDP 就绕不过去；TCP 443 才是根治。
 
 ### 6.4 连上了但网速慢 / 频繁断
 
@@ -1037,6 +1113,8 @@ WARP 出口  =  Cloudflare 共享池
 **加备用入口不会改变出口身份，对账号零影响**——这正是 README 反复强调的
 「入口和出口是两回事」。成本也是零：同一台机器，不用加钱。
 
+**一条命令就能加**，见 §9。
+
 ### 🟠 8.3 流量配额
 
 便宜套餐通常含 1–2 TB/月（去实例页面确认你的额度）。超了会限速或产生额外费用。
@@ -1080,6 +1158,76 @@ fail2ban-client status sshd
 
 每隔一两个月复查一次 IP 信誉（`scamalytics.com/ip/你的IP`）。
 **IP 信誉是动态的**，明显变差了就换个 IP，换的时候同样按第 5 节的流程走。
+
+---
+
+## 9. 加一条 REALITY TCP 备用入口
+
+**什么时候需要**：你只有 HY2 一条 UDP 入口，而 UDP 是会出问题的——运营商
+限速、QoS、某个网络下直接不通。那种时候服务器完全健康，你却进不去（§6.3.5）。
+
+REALITY 走 **TCP 443**，全互联网最不可能被整段封掉的端口。
+
+### 先把边界说清楚
+
+```text
+入口（怎么进 VPS）    ←  这一步只改这里，从一条变两条
+出口（从哪里上网）    ←  完全不变，同一台机器、同一个 IP
+```
+
+所以：
+
+- **对任何账号都是零变化**，目标网站看到的出口 IP 一个字节没变；
+- **不需要动任何已配好的 HY2 客户端**，HY2 照常工作；
+- 不用加钱，不用第二台机器。
+
+它**不会**让你的出口 IP 变干净——想改出口要用 WARP / 固定 SOCKS5，见 README。
+
+### 部署
+
+```bash
+bash add-reality.sh
+```
+
+跟 HY2 那个脚本一样，从仓库拿：
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/Mia06250603ian/personal-edge-proxy/main/scripts/add-reality.sh
+bash add-reality.sh
+```
+
+脚本会自动生成 UUID / REALITY 密钥对 / shortId，检查目标站点是否支持
+TLS 1.3，验证端口真的在监听，最后打印分享链接和 sing-box / mihomo 两种
+配置片段。
+
+**几个刻意的设计：**
+
+- **不碰 HY2**。装完还会回头确认 `hysteria-server` 仍在运行，
+  掉了就自动拉起——加保险的过程本身不该把正在用的那条路弄断。
+- **443 被别人占着就直接停手**，不会硬抢（换端口：`--port 8443`）。
+- **起不来就自动回滚**，让你停在"和改动前一样能用"的状态。
+- REALITY 目标默认 `www.microsoft.com`，可以用 `--sni` 换
+  （备选：`www.apple.com` / `addons.mozilla.org` / `dl.google.com`）。
+
+### 装完之后
+
+两条入口并存，客户端里配成两个节点，哪条通用哪条：
+
+```text
+UDP 24443   HY2       日常主用，更快
+TCP 443     REALITY   UDP 抽风时切过去
+```
+
+**装完当天就在客户端里把 REALITY 也配好**，别等到用的时候再配——
+真出问题的时候你多半连不上网，也就查不了文档。
+
+### 卸载
+
+```bash
+bash add-reality.sh --uninstall
+```
+
+只卸 REALITY，HY2 不受影响。
 
 ---
 

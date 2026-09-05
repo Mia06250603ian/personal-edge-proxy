@@ -90,10 +90,19 @@ apt-get update -qq
 apt-get install -y -qq curl openssl ca-certificates iproute2 >/dev/null
 
 # ---------------------------------------------------------------- 2. 如果之前装过 Xray 版，先让路
+#
+# 只在 Xray 真的占着本脚本要用的 UDP 端口时才停它。早期版本是无条件
+# 停 Xray，那会误伤 add-reality.sh 装的 REALITY 备用入口——它跑在
+# TCP 443，跟 HY2 井水不犯河水，却会被这一步顺手关掉，而且要等到
+# UDP 出问题、想切备用入口的那天才会发现。
 
 if systemctl is-active --quiet xray 2>/dev/null; then
-  warn "检测到正在运行的 Xray，先停掉以免端口冲突（配置保留，未卸载）"
-  systemctl disable --now xray >/dev/null 2>&1 || true
+  if ss -ulnp 2>/dev/null | grep -E ":${PORT}[[:space:]]" | grep -q xray; then
+    warn "Xray 正占用 UDP ${PORT}，先停掉以免冲突（配置保留，未卸载）"
+    systemctl disable --now xray >/dev/null 2>&1 || true
+  else
+    log "检测到 Xray 在运行，但没占用 UDP ${PORT}（多半是 REALITY 备用入口），保持不动"
+  fi
 fi
 
 # ---------------------------------------------------------------- 3. 安装 Hysteria2 官方服务端
