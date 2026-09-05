@@ -140,7 +140,26 @@ Default the TCP inbound to **8443**, not 443: a self-signed certificate on 443
 is a strong proxy signature on the most-scanned port there is. 443 is worth
 using once a domain and a real certificate exist.
 
-### 0.7 Where things live now
+### 0.7 The "broadcast IP" rule was wrong, and self-contradictory
+
+`docs/mobile-quickstart.md` §1.3 used to list `广播 IP → 直接放弃` as a purchase
+criterion while recommending Vultr, DigitalOcean and Linode a few lines below —
+whose IPs are broadcast in most regions. Applied literally, the rule rejected
+every provider the same section recommended, and a user who followed the guide
+was later told by the guide that their node was disqualified.
+
+Native-vs-broadcast affects **streaming geo-unlock**, not account risk. For AI
+egress the weights are: exclusivity and stability decisive, reputation score
+secondary, nativeness irrelevant. §1.3.5 now says so and names the old rule as
+an error, because a user who read the old version needs to see it corrected
+rather than silently rewritten.
+
+General rule for this repo: purchase criteria copied from streaming-unlock
+guides do not transfer. Before adding a criterion, state which failure it
+prevents *for this document's goal*, and check it does not exclude the hardware
+the document recommends.
+
+### 0.8 Where things live now
 
 | Need | File |
 |---|---|
