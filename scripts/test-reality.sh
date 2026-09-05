@@ -70,10 +70,22 @@ printf '    flow       %s\n' "${FLOW:-（无）}"
 printf '    公钥       %s\n' "$PUBLIC_KEY"
 echo
 
-# ---------------------------------------------------------------- 2. 生成本地客户端配置
+# ---------------------------------------------------------------- 2. 逐个组合去试
+#
+# 握手失败时服务端只说 "invalid connection"，不说是哪个参数不匹配。与其
+# 一次改一个参数、每轮跨设备验证几分钟，不如在本机把可疑组合一次跑完。
+#
+# 试的两个维度：
+#
+#   uTLS 指纹  现代 Chrome 的 ClientHello 带了后量子密钥交换，某些
+#              Xray 版本的 REALITY 对不上，换个老一点的指纹就通了
+#   flow       Vision 流控本身也可能是失败点，所以带一次、不带一次
 
-log "生成本地测试客户端"
-cat > "$CLIENT_CONFIG" <<EOF
+FINGERPRINTS="chrome firefox safari ios edge random"
+
+write_client() {
+  # $1 = fingerprint, $2 = flow（空字符串表示不带）
+  cat > "$CLIENT_CONFIG" <<EOF
 {
   "log": { "loglevel": "debug", "error": "${CLIENT_LOG}" },
   "inbounds": [
@@ -95,7 +107,7 @@ cat > "$CLIENT_CONFIG" <<EOF
             "address": "127.0.0.1",
             "port": ${PORT},
             "users": [
-              { "id": "${UUID}", "encryption": "none", "flow": "${FLOW}" }
+              { "id": "${UUID}", "encryption": "none", "flow": "$2" }
             ]
           }
         ]
@@ -104,7 +116,7 @@ cat > "$CLIENT_CONFIG" <<EOF
         "security": "reality",
         "realitySettings": {
           "serverName": "${SNI}",
-          "fingerprint": "chrome",
+          "fingerprint": "$1",
           "publicKey": "${PUBLIC_KEY}",
           "shortId": "${SHORT_ID}",
           "spiderX": "/"
@@ -114,48 +126,74 @@ cat > "$CLIENT_CONFIG" <<EOF
   ]
 }
 EOF
-
-# ---------------------------------------------------------------- 3. 跑起来测一次
-
-: > "$CLIENT_LOG"
-xray run -c "$CLIENT_CONFIG" >/dev/null 2>&1 &
-CLIENT_PID=$!
-cleanup() { kill "$CLIENT_PID" 2>/dev/null || true; }
-trap cleanup EXIT
-sleep 2
-
-kill -0 "$CLIENT_PID" 2>/dev/null || {
-  xray run -test -c "$CLIENT_CONFIG" 2>&1 | tail -20 >&2
-  die "本地测试客户端起不来（上面是配置校验输出）"
 }
 
-log "通过 REALITY 请求一次出口 IP……"
-RESULT="$(curl -fsS --max-time 15 -x "socks5h://127.0.0.1:${SOCKS_PORT}" https://api.ipify.org 2>/tmp/reality-curl.err || true)"
+CLIENT_PID=""
+cleanup() { [ -n "$CLIENT_PID" ] && kill "$CLIENT_PID" 2>/dev/null || true; }
+trap cleanup EXIT
+
+# 跑一次某个组合，通了返回 0 并把出口 IP 放进 RESULT
+try_combo() {
+  local fp="$1" flow="$2"
+  write_client "$fp" "$flow"
+  : > "$CLIENT_LOG"
+  xray run -c "$CLIENT_CONFIG" >/dev/null 2>&1 &
+  CLIENT_PID=$!
+  sleep 1
+  kill -0 "$CLIENT_PID" 2>/dev/null || { CLIENT_PID=""; return 1; }
+  RESULT="$(curl -fsS --max-time 8 -x "socks5h://127.0.0.1:${SOCKS_PORT}" https://api.ipify.org 2>/tmp/reality-curl.err || true)"
+  kill "$CLIENT_PID" 2>/dev/null || true
+  wait "$CLIENT_PID" 2>/dev/null || true
+  CLIENT_PID=""
+  [ -n "$RESULT" ]
+}
+
+RESULT=""
+GOOD_FP=""
+GOOD_FLOW=""
+
+for flow in "$FLOW" ""; do
+  for fp in $FINGERPRINTS; do
+    printf '    fingerprint=%-8s flow=%-18s ' "$fp" "${flow:-（不带）}"
+    if try_combo "$fp" "$flow"; then
+      echo "✅"
+      GOOD_FP="$fp"; GOOD_FLOW="$flow"
+      break 2
+    fi
+    echo "✗"
+  done
+done
+
+# ---------------------------------------------------------------- 3. 结论
 
 echo
 echo "=========================================================="
-if [ -n "$RESULT" ]; then
+if [ -n "$GOOD_FP" ]; then
   echo "  结果：✅ 通了，出口 IP = ${RESULT}"
   echo
-  echo "  → 服务端 REALITY 配置是对的。"
-  echo "    手机上连不上就是客户端那边的问题：版本太老、字段抄错、"
-  echo "    或者客户端不支持这套握手。对照上面的参数逐项核对。"
-else
-  echo "  结果：❌ 不通"
+  echo "  能用的组合："
+  echo "    fingerprint  ${GOOD_FP}"
+  echo "    flow         ${GOOD_FLOW:-（不带）}"
   echo
-  echo "  → 服务端自己都连不上自己，问题在服务端配置。"
+  echo "  → 服务端没问题。把客户端改成上面这个组合："
+  echo "    sing-box  \"utls\": { \"enabled\": true, \"fingerprint\": \"${GOOD_FP}\" }"
+  echo "    Clash     client-fingerprint: ${GOOD_FP}"
+  if [ -z "$GOOD_FLOW" ]; then
+    echo
+    echo "    并且【删掉客户端的 flow 那一行】——带 Vision 流控时握手不过去。"
+  fi
+else
+  echo "  结果：❌ 所有组合都不通"
+  echo
+  echo "  → 不是指纹也不是 flow 的问题，服务端 REALITY 参数本身有问题。"
   echo
   echo "  curl 报错："
-  sed 's/^/    /' /tmp/reality-curl.err 2>/dev/null | head -5
+  sed 's/^/    /' /tmp/reality-curl.err 2>/dev/null | head -3
   echo
-  echo "  客户端侧日志（这次能看到握手失败的具体原因）："
-  grep -iE 'reality|tls|handshake|failed' "$CLIENT_LOG" 2>/dev/null | tail -10 | sed 's/^/    /'
+  echo "  客户端侧日志："
+  grep -iE 'reality|tls|handshake|failed' "$CLIENT_LOG" 2>/dev/null | tail -6 | sed 's/^/    /'
   echo
   echo "  服务端侧日志："
   grep -i reality /var/log/xray/error.log 2>/dev/null | tail -3 | sed 's/^/    /'
 fi
 echo "=========================================================="
-echo
-echo "临时文件（排查完可以删）："
-echo "  $CLIENT_CONFIG"
-echo "  $CLIENT_LOG"
