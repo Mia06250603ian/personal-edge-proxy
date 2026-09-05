@@ -2,6 +2,22 @@
 #
 # add-reality.sh — 给现有节点加一条 VLESS + REALITY + Vision 的 TCP 备用入口
 #
+# ⚠️ 先读这段：这个脚本在实机上没能跑通，优先用 scripts/add-tcp-entry.sh
+#
+#   在 Ubuntu 24.04 + Xray 26.3.27 和 26.7.28 上，REALITY 握手一直失败，
+#   服务端只有一句 "handshake did not complete successfully"。已排除：
+#   公钥（从服务端私钥现推的）、shortId、serverName、系统时钟、传输字段
+#   （method/raw 与 network/tcp 都试过）、目标站点（四个都支持 TLS1.3+H2）、
+#   六种 uTLS 指纹、带与不带 Vision flow、以及升级 Xray 版本。
+#   用 Xray 自己的同版本客户端走回环连自己，同样失败。
+#
+#   同一台机器上 Xray 的 hysteria inbound 也有"配置通过校验、服务 active、
+#   但根本不监听端口"的老毛病（AGENTS.md §0.1）。同一个实现踩到第二次，
+#   所以 TCP 备用入口改用 sing-box 实现：scripts/add-tcp-entry.sh（已验证可用）。
+#
+#   这份保留下来，是因为 REALITY 的隐蔽性确实比普通 TLS 好，等哪天
+#   上游修好、或者找到根因，还能捡回来。跑它之前先有心理准备。
+#
 #   已有：Client -> Hysteria2 (UDP 24443) -> VPS -> Direct     ← 不动它
 #   新增：Client -> VLESS+REALITY (TCP 443) -> VPS -> Direct   ← 本脚本
 #

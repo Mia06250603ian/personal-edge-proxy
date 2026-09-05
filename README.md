@@ -402,7 +402,9 @@ personal-edge-proxy/
 ├── scripts/
 │   ├── install-hy2-official.sh     一条命令部署 Profile A（官方 HY2 → Direct）
 │   ├── install-hy2.sh              同上的 Xray 版（见脚本内说明，不推荐）
-│   ├── add-reality.sh              加一条 REALITY TCP 备用入口（不影响 HY2 和出口 IP）
+│   ├── add-tcp-entry.sh            加一条 TCP 备用入口（sing-box，已实机验证）
+│   ├── add-reality.sh              同上的 REALITY 版（实机没跑通，见脚本头部）
+│   ├── test-reality.sh             REALITY 握手失败时的服务端自测
 │   └── harden-server.sh            服务器基础加固（fail2ban / 自动补丁 / BBR）
 ├── examples/
 │   ├── xray-server.example.jsonc

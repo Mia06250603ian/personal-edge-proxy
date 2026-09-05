@@ -958,7 +958,7 @@ curl -4 -m 8 https://api.ipify.org; echo               # 打印出你的 VPS IP
    **所有客户端都要同步加上同一个密码，否则全部连不上**（sing-box 是
    `"obfs": {"type":"salamander","password":"..."}`，mihomo 是 `obfs:` +
    `obfs-password:`）。改之前先 `cp /etc/hysteria/config.yaml{,.bak}`。
-3. **加 REALITY TCP 入口**（`scripts/add-reality.sh`，见 §9）。前两条都是"绕"，
+3. **加 TCP 备用入口**（`scripts/add-tcp-entry.sh`，见 §9）。前两条都是"绕"，
    运营商真要掐 UDP 就绕不过去；TCP 443 才是根治。
 
 ### 6.4 连上了但网速慢 / 频繁断
@@ -1161,12 +1161,12 @@ fail2ban-client status sshd
 
 ---
 
-## 9. 加一条 REALITY TCP 备用入口
+## 9. 加一条 TCP 备用入口
 
 **什么时候需要**：你只有 HY2 一条 UDP 入口，而 UDP 是会出问题的——运营商
 限速、QoS、某个网络下直接不通。那种时候服务器完全健康，你却进不去（§6.3.5）。
 
-REALITY 走 **TCP 443**，全互联网最不可能被整段封掉的端口。
+备用入口走 **TCP**，UDP 被限制时它还进得去。
 
 ### 先把边界说清楚
 
@@ -1186,48 +1186,64 @@ REALITY 走 **TCP 443**，全互联网最不可能被整段封掉的端口。
 ### 部署
 
 ```bash
-bash add-reality.sh
+curl -fsSLO https://raw.githubusercontent.com/Mia06250603ian/personal-edge-proxy/main/scripts/add-tcp-entry.sh
+bash add-tcp-entry.sh
 ```
 
-跟 HY2 那个脚本一样，从仓库拿：
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/Mia06250603ian/personal-edge-proxy/main/scripts/add-reality.sh
-bash add-reality.sh
-```
-
-脚本会自动生成 UUID / REALITY 密钥对 / shortId，检查目标站点是否支持
-TLS 1.3，验证端口真的在监听，最后打印分享链接和 sing-box / mihomo 两种
-配置片段。
+装的是 **sing-box 的 VLESS + TLS 入口**，默认端口 8443。脚本会生成 UUID
+和自签证书、验证端口在监听、**并且真的通过这条入口发一次请求**，成功了
+才报完成。
 
 **几个刻意的设计：**
 
-- **不碰 HY2**。装完还会回头确认 `hysteria-server` 仍在运行，
-  掉了就自动拉起——加保险的过程本身不该把正在用的那条路弄断。
-- **443 被别人占着就直接停手**，不会硬抢（换端口：`--port 8443`）。
-- **起不来就自动回滚**，让你停在"和改动前一样能用"的状态。
-- REALITY 目标默认 `www.microsoft.com`，可以用 `--sni` 换
-  （备选：`www.apple.com` / `addons.mozilla.org` / `dl.google.com`）。
+- **成功的判据是"走通了一次请求"，不是"端口在监听"。** 这条是踩出来的：
+  上一版脚本在端口起来之后就宣布部署完成，结果两个客户端配完都连不通，
+  白折腾一轮。现在自测不过就自动回滚。
+- **不碰 HY2**。装完还会回头确认 `hysteria-server` 仍在运行，掉了就拉起。
+- **端口被别人占着就停手**，不硬抢（换端口：`--port 9443`）。
+- **默认 8443 而不是 443**。自签证书挂在 443 上是很明显的代理特征，而 443
+  是全互联网被扫得最狠的端口。等有了域名和真证书，再用 443 才有意义
+  （`--domain example.com`）。
+
+> **为什么不是 REALITY？** REALITY 隐蔽性更好，仓库里也有
+> `scripts/add-reality.sh`，但它在实机上（Xray 26.3.27 / 26.7.28）握手一直
+> 失败，能排除的都排除了还是不通，而 Xray 唯一的报错是一句不说原因的
+> "handshake did not complete successfully"。同样的 VLESS+TLS 入口换成
+> sing-box 一次就通。细节见那个脚本的头部注释和 `AGENTS.md` §0.6。
 
 ### 装完之后
 
 两条入口并存，客户端里配成两个节点，哪条通用哪条：
 
 ```text
-UDP 24443   HY2       日常主用，更快
-TCP 443     REALITY   UDP 抽风时切过去
+UDP 24443   HY2        日常主用，更快
+TCP 8443    VLESS+TLS  UDP 抽风时切过去
 ```
 
-**装完当天就在客户端里把 REALITY 也配好**，别等到用的时候再配——
+sing-box 里可以加一个 `selector`，把两条都列进去，在 App 界面上点着切，
+不用改配置：
+
+```json
+{
+  "type": "selector",
+  "tag": "select",
+  "outbounds": ["proxy", "tcp"],
+  "default": "proxy"
+}
+```
+
+然后 `"route": { "final": "select" }`，DNS 的 `detour` 也指向 `select`。
+
+**装完当天就在客户端里把备用入口也配好**，别等到用的时候再配——
 真出问题的时候你多半连不上网，也就查不了文档。
 
 ### 卸载
 
 ```bash
-bash add-reality.sh --uninstall
+bash add-tcp-entry.sh --uninstall
 ```
 
-只卸 REALITY，HY2 不受影响。
+只卸备用入口，HY2 不受影响。
 
 ---
 
