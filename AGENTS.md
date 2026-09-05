@@ -65,12 +65,108 @@ Ask which goal applies before recommending a profile.
 - A phone-only operator has no working recovery console. Never propose
   disabling SSH password auth, and treat lockout risk as higher than it looks.
 
-### 0.5 Where things live now
+### 0.5 A healthy server is not a working path — and phone terminals lie
+
+From a live "the node suddenly died" incident where the server turned out to be
+entirely healthy. Establish these four before touching any config:
+
+```bash
+systemctl is-active hysteria-server                 # active
+ss -ulnp | grep <port>                              # bound  (see 0.2)
+curl -4 -m 8 https://api.ipify.org; echo            # egress works, IP unchanged
+journalctl -u hysteria-server -n 30 --no-pager -o cat
+```
+
+Then read the log, because it names the failing layer directly:
+
+- `client connected` present → the packets arrive and auth succeeds. The config
+  is not the problem; the UDP path is. `no recent network activity` is quic-go's
+  idle timeout, i.e. the client's datagrams stopped arriving. Remedies in cost
+  order: change port → Salamander obfs → TCP inbound (§0.6).
+- no recent `client connected` at all → packets never arrive; port or protocol
+  is blocked upstream.
+
+Two traps specific to phone-only operators, both of which cost real time:
+
+1. **`systemctl status` / `journalctl` page through `less`.** On a phone this
+   looks like a hung server, and a stray `h` lands in the less help screen.
+   Open every session with `export SYSTEMD_PAGER=cat`, and always pass
+   `--no-pager -o cat` — the default log prefix alone is wider than the screen,
+   so the actual error is scrolled off to the right.
+2. **`curl` prints no trailing newline**, so a successful probe is swallowed by
+   the next prompt and reads as failure. Always append `; echo`.
+
+**Do not conclude "the carrier is blocking UDP" from a test that changed two
+variables** (e.g. iPhone-on-5G vs iPad-on-Wi-Fi). Hold the device constant and
+change only the network, or say the result is inconclusive.
+
+Also: when a user is running their working proxy through an *old provider*,
+testing their self-built node means switching egress IP on a live session.
+That is a real cost to them, not a trivial one — see `docs/mobile-quickstart.md`
+§5. Prefer diagnosis that needs no client switch, and prefer additive
+server-side work (`scripts/add-tcp-entry.sh`) that disturbs nothing.
+
+### 0.6 Xray could not serve a TCP inbound here; sing-box did
+
+Second field failure of the same implementation on the same host, after §0.1.
+On Ubuntu 24.04 with Xray 26.3.27 and 26.7.28, both a REALITY inbound and a
+plain VLESS+TLS inbound rejected every connection. Excluded before giving up:
+public key (re-derived from the server's own private key), shortId, serverName,
+clock sync, transport field name (`method`/`raw` and `network`/`tcp`), target
+site (four candidates, all TLS 1.3 + H2), six uTLS fingerprints, Vision flow on
+and off, certificate readability by the service user, and an upgrade across four
+months of releases. Xray's own same-version client, run on the box against its
+own inbound over loopback, failed identically. The only diagnostic Xray ever
+emits is `handshake did not complete successfully`.
+
+The same VLESS+TLS inbound on **sing-box** worked first try
+(`scripts/add-tcp-entry.sh`). Prefer sing-box for new server-side inbounds here:
+it is also what the clients run, so field names correspond, and its errors name
+causes. Keep Hysteria2 on the upstream hysteria server (§0.1).
+
+Two rules this incident earned:
+
+1. **A listening port is not a working entrance.** `add-reality.sh` reported
+   "deployment complete" on a bound socket, which sent the user to configure two
+   mobile clients against an inbound that never worked. Any script that adds an
+   inbound must proxy a real request through it before claiming success, and
+   roll back otherwise — `add-tcp-entry.sh` does this, and it is the difference
+   between a five-minute failure and an hour of cross-device guessing.
+2. **When a protocol's only error message names no cause, stop bisecting it.**
+   Each further guess costs a full round trip and returns the same sentence.
+   Switch implementations and keep the goal.
+
+Default the TCP inbound to **8443**, not 443: a self-signed certificate on 443
+is a strong proxy signature on the most-scanned port there is. 443 is worth
+using once a domain and a real certificate exist.
+
+### 0.7 The "broadcast IP" rule was wrong, and self-contradictory
+
+`docs/mobile-quickstart.md` §1.3 used to list `广播 IP → 直接放弃` as a purchase
+criterion while recommending Vultr, DigitalOcean and Linode a few lines below —
+whose IPs are broadcast in most regions. Applied literally, the rule rejected
+every provider the same section recommended, and a user who followed the guide
+was later told by the guide that their node was disqualified.
+
+Native-vs-broadcast affects **streaming geo-unlock**, not account risk. For AI
+egress the weights are: exclusivity and stability decisive, reputation score
+secondary, nativeness irrelevant. §1.3.5 now says so and names the old rule as
+an error, because a user who read the old version needs to see it corrected
+rather than silently rewritten.
+
+General rule for this repo: purchase criteria copied from streaming-unlock
+guides do not transfer. Before adding a criterion, state which failure it
+prevents *for this document's goal*, and check it does not exclude the hardware
+the document recommends.
+
+### 0.8 Where things live now
 
 | Need | File |
 |---|---|
 | Deploy (recommended) | `scripts/install-hy2-official.sh` |
 | Deploy (Xray, see 0.1) | `scripts/install-hy2.sh` |
+| Add a TCP backup inbound | `scripts/add-tcp-entry.sh` (sing-box; verified) |
+| Same, REALITY (see §0.6) | `scripts/add-reality.sh` (did not work on hardware) |
 | Server hardening | `scripts/harden-server.sh` |
 | Phone-only walkthrough, troubleshooting | `docs/mobile-quickstart.md` |
 | Record a specific deployment | `docs/handover-template.md` |
@@ -495,6 +591,9 @@ docs/mobile-quickstart.md              phone-only Profile A walkthrough + troubl
 docs/handover-template.md              template for recording a specific deployment
 scripts/install-hy2-official.sh        recommended HY2 deploy (upstream server)
 scripts/install-hy2.sh                 Xray-native HY2 deploy (see §0.1 before using)
+scripts/add-tcp-entry.sh               additive VLESS+TLS TCP inbound on sing-box (verified)
+scripts/add-reality.sh                 same on Xray REALITY (see §0.6 — did not work here)
+scripts/test-reality.sh                loopback self-test for a REALITY inbound
 scripts/harden-server.sh               fail2ban / unattended-upgrades / BBR
 ```
 

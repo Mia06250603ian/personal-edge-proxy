@@ -94,7 +94,7 @@ Ubuntu 22.04 / 24.04 或 Debian 12
 | 指标 | 合格线 | 说明 |
 |---|---|---|
 | IPPure 系数 | **< 40%** | 不用追求 15%，那是住宅 IP 的水平，为它多花 3 倍钱不值 |
-| IP 属性 | 机房 IP 可接受 | 但如果标着 **"广播 IP"** → ❌ 直接放弃 |
+| IP 属性 | 机房 IP 可接受 | 「广播 IP」不用管，见下方说明 |
 | 人机流量比 | bot **< 50%** | bot 占比高说明这个段在被大量程序化使用 |
 | ASN | 见下面黑名单 | |
 
@@ -115,6 +115,38 @@ Ubuntu 22.04 / 24.04 或 Debian 12
    —— 大厂，独享 IP，段的信誉一般但不烂，价格 $5–6
 ✅ 各地区本土中小机房（日本 IIJ / Sakura、韩国 KT 等）
    —— 往往更干净，但需要自己甄别商家
+```
+
+### 1.3.5 关于「广播 IP / 原生 IP」——别被这一项吓退
+
+ping0.cc 之类的工具会把 IP 标成「原生」或「广播」：
+
+```text
+原生 IP   这个 IP 段注册的地址 = 它实际所在的地方
+广播 IP   IP 段注册在别处，路由广播到这个机房
+```
+
+**这一项只对流媒体有意义。** Netflix、Disney+、TikTok 靠 IP 归属地判断你能看
+什么内容，广播 IP 容易被判成"地区不符"，于是解锁失败。查询页面下方那排
+`TikTok ★☆☆☆☆ 不推荐` 评的就是这个，**不是在评账号安全**。
+
+**对 AI 服务没有影响**：它们不做地区解锁判断，看的是这个 IP 有没有滥用历史、
+上面有多少人、行为正不正常。
+
+> ⚠️ **这份文档早期版本在上面那张表里写过「标着广播 IP → 直接放弃」，那是错的**，
+> 而且和本节推荐的 Vultr / DigitalOcean / Linode 直接冲突——**这三家在多数
+> 地区的 IP 都是广播 IP**，按那条规则执行，它自己推荐的选项一个都买不了。
+>
+> 那条标准是从流媒体解锁场景抄来的，不适用于本文档的目标。真要拿到原生 IP，
+> 基本只能买住宅 / ISP 产品，月费从 $5 变成 ¥70–200+。**不看流媒体的话这钱是白花的。**
+
+按重要性排，四项指标的真实权重是：
+
+```text
+独享性    ⭐⭐⭐   决定性
+稳定性    ⭐⭐⭐   决定性
+纯净度    ⭐⭐     次要
+原生性    —       AI 用途无关
 ```
 
 **关于"双 ISP 原生住宅 VPS"：** 这类确实更干净，但月费通常 ¥70–200+，且这个市场
@@ -793,12 +825,40 @@ systemctl start hysteria-server
 
 ## 6. 排错
 
+### 6.0 ⚠️ 手机上排错之前，先关掉分页器
+
+**这一步不做，你会卡在一个跟故障毫无关系的界面里出不来。**
+
+`systemctl status` 和 `journalctl` 默认把输出喂给 `less` 分页器。在手机上
+这东西是纯粹的障碍：屏幕窄、没有 Esc 键、误触 `h` 会进入帮助页，看起来
+像是服务器卡死了，其实只是个翻页程序。
+
+**每次 SSH 连上先跑这一条：**
+
+```bash
+export SYSTEMD_PAGER=cat
+```
+
+本次会话内所有 systemd 命令都不再调 `less`。**已经卡进去了**：按 `q`
+（可能要按两次），没反应就直接断开重连，一秒钟的事。
+
+还有一个手机专属技巧——看日志时加 `-o cat`：
+
+```bash
+journalctl -u hysteria-server -n 30 --no-pager -o cat
+```
+
+默认格式每行前面有 `Sep 05 05:15:50 vultr hysteria[13275]:` 这么一大串，
+手机屏幕一行放不下，**真正的报错全被挤到右边看不见**。`-o cat` 只留正文。
+
+本文档后面的命令都按这个写法给。
+
 ### 6.1 先分清是哪一层坏了
 
 在 SSH 里跑：
 
 ```bash
-systemctl status xray
+systemctl status hysteria-server --no-pager
 ```
 
 - **显示 `active (running)`** → 服务端没问题，问题在网络或客户端，看 6.3
@@ -884,6 +944,54 @@ ufw status
 **4. 排除运营商 QoS**：有些移动网络会限制 UDP。测试方法：切到另一个网络
 （比如从 5G 切到 Wi-Fi，或反过来）再试。如果换网就好了，说明是运营商的问题——
 这种情况才需要考虑加 REALITY（走 TCP 443），见 README。
+
+### 6.3.5 日志里有 `client connected`，但客户端还是没网
+
+这说明**握手成功、密码正确、包能到服务器**——问题不在配置。典型日志长这样：
+
+```text
+05:14:43  INFO  client connected     {"addr":"112.36.205.37:20181","id":"user"}
+05:15:50  WARN  TCP error            {"error":"readfrom ...: timeout: no recent network activity"}
+05:15:50  INFO  client disconnected  {"error":"accepting stream failed: timeout: no recent network activity"}
+```
+
+`no recent network activity` 是 **QUIC 的空闲超时**：服务器在等客户端的 UDP
+包，等不到，就把这条连接判死了。连上之后一分钟内断，基本都是这个。
+
+先确认服务器这边是好的（三条都应该正常）：
+
+```bash
+systemctl is-active hysteria-server                    # active
+ss -ulnp | grep 24443                                  # 有输出
+curl -4 -m 8 https://api.ipify.org; echo               # 打印出你的 VPS IP
+```
+
+> ⚠️ `curl` 成功时输出**不带换行**，紧接着就是下一个提示符，在手机上很像
+> "什么都没打印"。所以命令后面一定要跟 `; echo`，否则会把成功误判成失败。
+
+三条都正常 = **服务器健康，是客户端到服务器这段 UDP 路不通或不稳**。常见原因：
+
+| 现象 | 原因 |
+|---|---|
+| 换个网络就好（5G ↔ Wi-Fi） | 运营商在限制 / QoS UDP |
+| 日志里客户端 IP 中途变了 | 移动网络 NAT 映射漂移，QUIC 连接跟着断 |
+| 一直连不上，日志里**没有**新的 `client connected` | 包根本没到，端口或协议被封 |
+
+按成本从低到高处理：
+
+1. **换个端口**（`--port 8443` 或 `--port 443`）。有些运营商是按端口段做 QoS 的。
+2. **开 Salamander 混淆**。HY2 裸 QUIC 特征明显，混淆后看起来就是普通 UDP 流量。
+   服务端 `/etc/hysteria/config.yaml` 加：
+   ```yaml
+   obfs:
+     type: salamander
+     password: 你生成的混淆密码
+   ```
+   **所有客户端都要同步加上同一个密码，否则全部连不上**（sing-box 是
+   `"obfs": {"type":"salamander","password":"..."}`，mihomo 是 `obfs:` +
+   `obfs-password:`）。改之前先 `cp /etc/hysteria/config.yaml{,.bak}`。
+3. **加 TCP 备用入口**（`scripts/add-tcp-entry.sh`，见 §9）。前两条都是"绕"，
+   运营商真要掐 UDP 就绕不过去；TCP 443 才是根治。
 
 ### 6.4 连上了但网速慢 / 频繁断
 
@@ -1037,6 +1145,8 @@ WARP 出口  =  Cloudflare 共享池
 **加备用入口不会改变出口身份，对账号零影响**——这正是 README 反复强调的
 「入口和出口是两回事」。成本也是零：同一台机器，不用加钱。
 
+**一条命令就能加**，见 §9。
+
 ### 🟠 8.3 流量配额
 
 便宜套餐通常含 1–2 TB/月（去实例页面确认你的额度）。超了会限速或产生额外费用。
@@ -1080,6 +1190,92 @@ fail2ban-client status sshd
 
 每隔一两个月复查一次 IP 信誉（`scamalytics.com/ip/你的IP`）。
 **IP 信誉是动态的**，明显变差了就换个 IP，换的时候同样按第 5 节的流程走。
+
+---
+
+## 9. 加一条 TCP 备用入口
+
+**什么时候需要**：你只有 HY2 一条 UDP 入口，而 UDP 是会出问题的——运营商
+限速、QoS、某个网络下直接不通。那种时候服务器完全健康，你却进不去（§6.3.5）。
+
+备用入口走 **TCP**，UDP 被限制时它还进得去。
+
+### 先把边界说清楚
+
+```text
+入口（怎么进 VPS）    ←  这一步只改这里，从一条变两条
+出口（从哪里上网）    ←  完全不变，同一台机器、同一个 IP
+```
+
+所以：
+
+- **对任何账号都是零变化**，目标网站看到的出口 IP 一个字节没变；
+- **不需要动任何已配好的 HY2 客户端**，HY2 照常工作；
+- 不用加钱，不用第二台机器。
+
+它**不会**让你的出口 IP 变干净——想改出口要用 WARP / 固定 SOCKS5，见 README。
+
+### 部署
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/Mia06250603ian/personal-edge-proxy/main/scripts/add-tcp-entry.sh
+bash add-tcp-entry.sh
+```
+
+装的是 **sing-box 的 VLESS + TLS 入口**，默认端口 8443。脚本会生成 UUID
+和自签证书、验证端口在监听、**并且真的通过这条入口发一次请求**，成功了
+才报完成。
+
+**几个刻意的设计：**
+
+- **成功的判据是"走通了一次请求"，不是"端口在监听"。** 这条是踩出来的：
+  上一版脚本在端口起来之后就宣布部署完成，结果两个客户端配完都连不通，
+  白折腾一轮。现在自测不过就自动回滚。
+- **不碰 HY2**。装完还会回头确认 `hysteria-server` 仍在运行，掉了就拉起。
+- **端口被别人占着就停手**，不硬抢（换端口：`--port 9443`）。
+- **默认 8443 而不是 443**。自签证书挂在 443 上是很明显的代理特征，而 443
+  是全互联网被扫得最狠的端口。等有了域名和真证书，再用 443 才有意义
+  （`--domain example.com`）。
+
+> **为什么不是 REALITY？** REALITY 隐蔽性更好，仓库里也有
+> `scripts/add-reality.sh`，但它在实机上（Xray 26.3.27 / 26.7.28）握手一直
+> 失败，能排除的都排除了还是不通，而 Xray 唯一的报错是一句不说原因的
+> "handshake did not complete successfully"。同样的 VLESS+TLS 入口换成
+> sing-box 一次就通。细节见那个脚本的头部注释和 `AGENTS.md` §0.6。
+
+### 装完之后
+
+两条入口并存，客户端里配成两个节点，哪条通用哪条：
+
+```text
+UDP 24443   HY2        日常主用，更快
+TCP 8443    VLESS+TLS  UDP 抽风时切过去
+```
+
+sing-box 里可以加一个 `selector`，把两条都列进去，在 App 界面上点着切，
+不用改配置：
+
+```json
+{
+  "type": "selector",
+  "tag": "select",
+  "outbounds": ["proxy", "tcp"],
+  "default": "proxy"
+}
+```
+
+然后 `"route": { "final": "select" }`，DNS 的 `detour` 也指向 `select`。
+
+**装完当天就在客户端里把备用入口也配好**，别等到用的时候再配——
+真出问题的时候你多半连不上网，也就查不了文档。
+
+### 卸载
+
+```bash
+bash add-tcp-entry.sh --uninstall
+```
+
+只卸备用入口，HY2 不受影响。
 
 ---
 
