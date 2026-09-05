@@ -950,7 +950,7 @@ ufw status
 这说明**握手成功、密码正确、包能到服务器**——问题不在配置。典型日志长这样：
 
 ```text
-05:14:43  INFO  client connected     {"addr":"112.36.205.37:20181","id":"user"}
+05:14:43  INFO  client connected     {"addr":"CLIENT_IP:20181","id":"user"}
 05:15:50  WARN  TCP error            {"error":"readfrom ...: timeout: no recent network activity"}
 05:15:50  INFO  client disconnected  {"error":"accepting stream failed: timeout: no recent network activity"}
 ```
@@ -1011,7 +1011,7 @@ vnstat -m 2>/dev/null || echo "vnstat 未安装：apt install -y vnstat"
 **SSH 连不上，报 `unknown node or service`**
 
 主机名里混进了多余字符。复制 IP 时很容易把行尾的空格或标点一起带进去
-（实机遇到过 `"139.180.136.175 #"`）。看报错里引号中间的内容，
+（实机遇到过 `"YOUR_SERVER_IP #"`）。看报错里引号中间的内容，
 **手动重打一遍 IP**，确认前后没有空格。
 
 **SSH 密码怎么输都是 `Authentication failed`**
