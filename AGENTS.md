@@ -278,6 +278,52 @@ Also check this **before rebooting**, not after: a stray unit that grabs a port
 during boot turns a routine reboot into "the proxy is down and I'm debugging
 from a phone".
 
+### 0.10 "The TCP entrance is always stable" is no longer true — the whole derivation has to be re-walked
+
+§0.8 and `docs/stability-and-security.md` both rest their central deduction on one
+observation: **TCP 8443 stayed up while HY2 dropped**. Two inbounds, one host, one
+egress, differing only in UDP vs TCP — so every shared-failure cause was excluded,
+and the one self-consistent explanation left was "a middlebox dropping
+source-IP → server-UDP-port".
+
+Field logs on 2026-09-06 invalidated that premise. **On mobile cellular:**
+
+| Inbound | What the log shows |
+|---|---|
+| HY2 / UDP 24443 | Connects, authenticates, proxies real traffic (genuine `reqAddr` targets), then the whole connection dies 40s–2min in |
+| VLESS+TLS / TCP 8443 | 204 TLS handshake failures in 3h (EOF / 15s deadline). **Not one success in 24h** |
+
+At the same time, on home broadband (**same carrier**), both inbounds were fine and
+the iPad was using the node continuously. And the user's **previous commercial
+provider worked normally on that same phone, on that same cellular network.**
+
+Together these push the conclusion somewhere different:
+
+- Not "UDP is being blocked" — TCP failed too, different port, different protocol.
+- Not "cellular blocks all proxies" — the old provider was alive on the same path.
+- The only thing the two inbounds share is **the server's IP address**.
+
+**So the thing to suspect is the IP being targeted on that carrier's cellular
+network — not a port and not a protocol.** Note it is not a hard block: the HY2
+handshake completes and carries traffic for tens of seconds, so packets do arrive
+and do come back.
+
+Two rules follow:
+
+1. **The ladder's bottom rung — "switch to the TCP entrance, it is unaffected by
+   UDP restrictions" — can no longer be treated as a fallback.** That sentence was
+   written when TCP was stable; it can now be gone alongside UDP. Confirm that path
+   is actually alive *at this moment* before offering it as a user's safety net.
+2. **Split by network first, protocol second.** When "both entrances are down" holds
+   on one network and not on another, the shared cause is not the server — it is
+   the path from that network to this IP. Read `docs/paste-commands.md` §9 with this
+   qualification.
+
+Also: obfs is the remaining server-side move that changes what the traffic *looks
+like*, and it covers HY2 only. If the phone still fails after obfs, that is strong
+evidence for the IP itself, and the only real remedy is a new IP — keep escalating
+port tricks past that point and you are just moving the same failure around.
+
 ### 0.9 Where things live now
 
 | Need | File |
