@@ -329,7 +329,7 @@ fi
 
 # 6b. UDP 丢包计数
 if command -v nstat >/dev/null 2>&1; then
-  RCVERR="$(nstat -az 2>/dev/null | awk '/UdpRcvbufErrors/{print $2}' | head -1)"
+  RCVERR="$(nstat -asz 2>/dev/null | awk '/UdpRcvbufErrors/{print $2}' | head -1)"
   [ -n "${RCVERR:-}" ] && [ "${RCVERR:-0}" -gt 0 ] 2>/dev/null && {
     bad "UdpRcvbufErrors = ${RCVERR}（内核因缓冲区满丢过 UDP 包）"
     add "内核已经实际丢了 ${RCVERR} 个 UDP 包，直接印证上面的缓冲区问题。"
