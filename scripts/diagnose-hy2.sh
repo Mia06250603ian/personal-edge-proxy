@@ -11,6 +11,7 @@
 #
 #   bash diagnose-hy2.sh
 #   bash diagnose-hy2.sh --hours 72     # 默认看最近 24 小时的日志
+#   bash diagnose-hy2.sh --tz 8         # 日志是 UTC，默认按 +8 换算成本地时间
 #
 # 手机上跑：整个脚本不分页、不需要按键，输出可以直接截图或复制。
 #
@@ -20,10 +21,12 @@ export SYSTEMD_PAGER=cat
 export SYSTEMD_COLORS=0
 
 HOURS=24
+TZ_OFFSET=8      # 日志是 UTC；这里换算成你的本地时间。中国是 +8
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --hours) HOURS="${2:?--hours 需要一个数字}"; shift 2 ;;
+    --tz)    TZ_OFFSET="${2:?--tz 需要一个时区偏移，中国是 8}"; shift 2 ;;
     -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) printf '未知参数：%s\n' "$1" >&2; exit 1 ;;
   esac
@@ -126,7 +129,7 @@ fi
 
 hdr "4. 最近 ${HOURS} 小时的断线记录"
 
-LOG="$(mktemp)"; trap 'rm -f "$LOG" "$LOG.ev" "$LOG.rs"' EXIT
+LOG="$(mktemp)"; trap 'rm -f "$LOG" "$LOG.ev" "$LOG.rs" "$LOG.se"' EXIT
 journalctl -u "$UNIT" --since "-${HOURS}h" --no-pager -o cat >"$LOG" 2>/dev/null
 
 # 注意：grep -c 没匹配时会「打印 0 并且以 1 退出」。写成 `|| echo 0` 会得到
@@ -167,6 +170,64 @@ if [ -s "$LOG.rs" ]; then
   info "  connection refused / closed by peer  = 客户端主动断开（多半是你自己重开了）"
 else
   info "  （日志里没有带原因的断开记录）"
+fi
+
+# ---- 真正的故障时刻 ----
+#
+# 这一段是整个脚本最重要的部分，因为服务端日志有个陷阱：
+# 手机换个基站，旧连接同样会以 "no recent network activity" 消失，
+# 跟真故障【写出来一模一样】，但用户根本感觉不到。
+# 把两者混为一谈，就会把一次故障说成四次，把用户的"就死了一次"驳回去。
+#
+# 判据（拿真实日志校准过）：
+#   1. 只看本来就用了 5 分钟以上的会话——短连接多半是手机后台挂起再重连，
+#      用户在睡觉或没在用，谈不上"断了"。
+#   2. 断开后 10 分钟内如果又建起一条活过 3 分钟的连接，说明客户端自己
+#      接上了 → 换基站，无感。
+#   3. 接不回来的，才是用户说的"死了"。
+: > "$LOG.se"
+PREV=""
+while read -r ts kind; do
+  E="$(date -u -d "$ts" +%s 2>/dev/null || echo 0)"
+  [ "$E" = "0" ] && continue
+  if [ "$kind" = "C" ]; then
+    PREV="$E"
+  elif [ -n "$PREV" ]; then
+    printf '%s %s %s %s\n' "$PREV" "$E" "$((E - PREV))" "$kind" >>"$LOG.se"
+    PREV=""
+  fi
+done < <(awk '/client connected/    { print $1, "C" }
+              /client disconnected/ { print $1, (/no recent network activity/ ? "T" : "X") }' "$LOG" 2>/dev/null)
+
+info ""
+info "真正的故障时刻（已排除换基站造成的假断线）："
+# 参照点必须是【真实当前时间】，不是最后一条日志的时间。
+# 用后者的话，最近一次断线离日志末尾往往只有几十秒，会被下面
+# "数据不够" 的保护条件挡掉——而那次恰恰是用户最关心的那一次。
+NOW_TS="$(date -u +%s)"
+OUTAGES=0
+if [ -s "$LOG.se" ]; then
+  while read -r st en dur kind; do
+    [ "$kind" = "T" ]      || continue    # 客户端主动关闭的不算故障
+    [ "$dur" -ge 300 ]     || continue    # 本来就没用起来的不算
+    [ $((NOW_TS - en)) -ge 600 ] || continue   # 刚断不到 10 分钟，还看不出接不接得回来
+    REC=0
+    while read -r s2 _e2 d2 _k2; do
+      [ "$s2" -ge "$en" ] && [ "$s2" -lt $((en + 600)) ] && [ "$d2" -ge 180 ] && REC=1
+    done <"$LOG.se"
+    if [ "$REC" -eq 0 ]; then
+      OUTAGES=$((OUTAGES + 1))
+      info "  ★ $(date -u -d "@$((en + TZ_OFFSET * 3600))" '+%m-%d %H:%M:%S')  之前正常用了 $((dur / 60)) 分钟，然后断了且接不回来"
+    fi
+  done <"$LOG.se"
+fi
+if [ "$OUTAGES" -eq 0 ]; then
+  info "  这段时间里没有找到「用着用着断了还接不回来」的情况。"
+else
+  info ""
+  info "  上面的时刻是按 UTC+${TZ_OFFSET} 换算的本地时间（服务器日志本身是 UTC）。"
+  info "  不对的话加 --tz 你的时区，例如 --tz 9。"
+  add "这段时间里出现了 ${OUTAGES} 次真正的断线（用着用着断掉且接不回来），时刻见上面第 4 节。其余的 disconnected 都是换基站，你不会有感觉。"
 fi
 
 # 客户端 IP 是否漂移：移动网络 NAT 映射一变，QUIC 连接必断。

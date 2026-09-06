@@ -179,6 +179,30 @@ never tuned by anything.
 Two of them produce exactly the symptoms attributed to carrier interference,
 and both are free to rule out.
 
+**A server-side `client disconnected` is NOT a user-visible outage.** This is
+the single easiest way to misread this log. A phone moving between cells gets a
+new carrier IP; the old connection then expires with
+`timeout: no recent network activity` — **byte-for-byte the same log line as a
+real failure** — while the client has already reconnected and the user noticed
+nothing. On one real 2-hour capture, 15 such disconnects contained exactly
+**one** outage the user actually experienced.
+
+Never quote a raw disconnect count back to a user as "it dropped N times". They
+know what they experienced; contradicting them with an inflated number destroys
+your credibility and is simply wrong. Classify first — `diagnose-hy2.sh` now
+does this automatically and prints the local wall-clock time of each real
+outage:
+
+- Ignore sessions shorter than ~5 min: those are a backgrounded phone being
+  suspended and reconnecting, not an outage.
+- If a session ≥3 min is re-established within ~10 min, it was a cell handoff.
+- Only what fails to come back is an outage.
+
+**Log timestamps are UTC** (`Z` suffix, and these servers run UTC). The user is
+almost certainly not. Convert before quoting any time — `--tz` defaults to +8.
+Quoting UTC as if it were their local time will have you asking why they were
+online at 4am when it was actually lunchtime.
+
 **Two questions settle this faster than any config reading.** Ask them first:
 
 1. **Is the TCP inbound stable while HY2 drops?** Both run on the same host and
