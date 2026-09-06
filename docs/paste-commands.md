@@ -105,3 +105,93 @@ journalctl -u hysteria-server -n 5 --no-pager -o cat | grep -o '"tx": [0-9]*'
   值得做,但会干扰当前这次归因,等 Brutal 这轮结论出来再说。
 - `obfs` Salamander 混淆。**硬切换**,所有客户端要同步加同一个密码,
   动手前先切到 TCP 备用入口(8443),免得改到一半没网。
+
+---
+
+## 4. 架构体检:对照教程查差距(只读)
+
+```bash
+echo "=================== 服务端体检（只读）==================="
+C=/etc/hysteria/config.yaml; S=/etc/sing-box/config.json
+p(){ printf '  %-30s %s\n' "$1" "$2"; }
+echo "-- 教程 §3 装了什么 --"
+F=$(systemctl is-active fail2ban 2>/dev/null|head -1); p "fail2ban" "${F:-未安装 ← 教程要求}"
+U=$(systemctl is-enabled unattended-upgrades 2>/dev/null|head -1); p "unattended-upgrades" "${U:-未启用 ← 教程要求}"
+p "BBR"                 "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+p "私网 ACL"            "$(grep -q 'reject(10\.' $C 2>/dev/null && echo 有 || echo '没有 ← 教程要求')"
+echo "-- 稳定性相关 --"
+p "ignoreClientBandwidth" "$(grep -q '^ignoreClientBandwidth' $C 2>/dev/null && echo '已设 ✓' || echo 未设)"
+p "maxIdleTimeout"      "$(grep -qE '^\s*maxIdleTimeout' $C 2>/dev/null && echo 已设 || echo '未设（默认30s）')"
+p "obfs 混淆"           "$(grep -q '^obfs' $C 2>/dev/null && echo 已开 || echo 未开)"
+p "net.core.rmem_max"   "$(R=$(sysctl -n net.core.rmem_max 2>/dev/null); [ "${R:-0}" -ge 7500000 ] && echo "$R ✓" || echo "$R ← quic-go 要 ~7500000")"
+echo "-- 权限（钥匙别让全服务器可读）--"
+p "hysteria 配置"       "$(stat -c%a $C 2>/dev/null)"
+p "sing-box 配置"       "$(stat -c%a $S 2>/dev/null || echo 无) $( [ "$(stat -c%a $S 2>/dev/null)" = 600 ] || echo '← 含 UUID，应为 600')"
+p "/tmp 里的残留 UUID"  "$(ls /tmp/tcp-entry-selftest.json 2>/dev/null || echo 无)"
+p "含密码的备份数"      "$(ls $C.bak.* 2>/dev/null | wc -l) 个，其中非600: $(find /etc/hysteria /etc/sing-box -name '*.bak.*' ! -perm 600 2>/dev/null | wc -l)"
+echo "-- SSH --"
+p "PermitRootLogin"     "$(sshd -T 2>/dev/null | awk '/^permitrootlogin/{print $2}')"
+p "密码登录"            "$(sshd -T 2>/dev/null | awk '/^passwordauthentication/{print $2}')"
+p "已封禁爆破 IP"       "$(fail2ban-client status sshd 2>/dev/null | awk -F: '/Total banned/{print $2}' | tr -d ' ' || echo -)"
+p "近期失败登录"        "$(journalctl -u ssh --since -7d --no-pager 2>/dev/null | grep -c 'Failed password')"
+echo "-- 系统 --"
+p "待安装更新"          "$(apt list --upgradable 2>/dev/null | grep -c upgradable)"
+p "需要重启"            "$([ -f /var/run/reboot-required ] && echo 是 || echo 否)"
+p "磁盘"                "$(df -h / | awk 'NR==2{print $5" 已用"}')"
+p "本月流量"            "$(vnstat -m --oneline 2>/dev/null | cut -d';' -f11 || echo '未装 vnstat')"
+echo "========================================================"
+```
+
+---
+
+## 5. 收紧权限、清掉残留(会重启 sing-box 约 2 秒)
+
+旧版 `add-tcp-entry.sh` 把 sing-box 配置留成 0644(里面是 VLESS UUID),
+并把带 UUID 的自测配置留在 `/tmp` 且不删。仓库里已修,但服务器上跑的是旧版。
+
+> ⚠️ 这段会重启 sing-box。**正在用 TCP 入口的话先切回 HY2**,或者等不用的时候再做。
+> 收紧之后会真的重启验证一次,起不来会自动改回原权限——因为
+> 「现在还能用」不等于「下次重启还能用」:进程已经打开的文件不受 chmod 影响,
+> 权限设错要到下次重启才爆,那种雷最难查。
+
+```bash
+S=/etc/sing-box/config.json
+echo "-- 收紧 sing-box 配置权限（里面是 VLESS UUID）--"
+if [ -f "$S" ]; then
+  OLD=$(stat -c%a "$S"); SU=$(systemctl show sing-box -p User --value 2>/dev/null | head -1)
+  chmod 600 "$S"
+  if [ -n "$SU" ] && [ "$SU" != root ] && id "$SU" >/dev/null 2>&1; then chown "$SU" "$S"; echo "  属主交给 $SU"; fi
+  systemctl restart sing-box; sleep 2
+  if systemctl is-active --quiet sing-box; then echo "  ✅ $OLD -> $(stat -c%a "$S")，服务正常"
+  else chmod "$OLD" "$S"; systemctl restart sing-box; echo "  ❌ 收紧后起不来，已改回 $OLD"; fi
+else echo "  没找到 $S"; fi
+echo "-- 收紧含密码/UUID 的备份文件 --"
+N=$(find /etc/hysteria /etc/sing-box -name '*.bak.*' ! -perm 600 2>/dev/null | wc -l)
+find /etc/hysteria /etc/sing-box -name '*.bak.*' -exec chmod 600 {} \; 2>/dev/null
+echo "  收紧了 $N 个"
+echo "-- 清掉 /tmp 里带 UUID 的残留 --"
+for f in /tmp/tcp-entry-selftest.json /tmp/sb-selftest.log /tmp/sb-check.log /tmp/xray-test.log; do
+  [ -e "$f" ] && { rm -f "$f"; echo "  删除 $f"; }
+done
+echo "-- 两条入口都还活着吗 --"
+printf '  hysteria-server: %s\n  sing-box:        %s\n' "$(systemctl is-active hysteria-server 2>/dev/null)" "$(systemctl is-active sing-box 2>/dev/null)"
+```
+
+---
+
+## 6. 对照教程的差距清单(2026-09-06)
+
+| 教程要求 | 实际 | 处理 |
+|---|---|---|
+| §8.1 余额提醒 —— 「不管它就一定会发生」 | 没设 | 🔴 手机日历,每月重复 |
+| §3.1 真证书 | 两条入口都自签 + 关闭校验 | 🔴 证书指纹固定,见 stability-and-security.md |
+| §2.1 SSH 密钥 | root + 密码 + 22 | 🔴 先验证密钥能登录再关密码 |
+| §8.4 密码轮换靠脚本 | 仓库不在服务器上 | 🟠 要轮换时先 clone |
+| §8.5 例行 apt upgrade | 19 个更新待装,需重启 | 🟠 找个不用网的时候做 |
+| §6.4 UDP 缓冲区 | 208KB,要 7.5MB | 🟠 **故意押后**,别干扰当前实验 |
+
+**客户端侧只能自己看**(教程 §5 / 交接单 §5):
+
+- DNS 的 `detour` 必须指 selector,不能指 `proxy` —— 否则切到 tcp 之后 DNS 还在往 HY2 那条死路发
+- selector / proxy-group 里不能有 `DIRECT` —— iOS 没有系统级 kill switch
+- mihomo 的「UDP 兜底」选最严格那档
