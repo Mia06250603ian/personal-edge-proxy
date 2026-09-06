@@ -217,6 +217,18 @@ online at 4am when it was actually lunchtime.
    Brutal's per-connection self-collapse. What remains is a middlebox dropping
    that source IP to the server's UDP port.
 
+**Run question 1 in reverse when both entrances are dead at once.** The same
+comparison that clears the server when TCP is stable *indicts* it when TCP is
+not: two inbounds on one host and one egress, differing only in UDP vs TCP, can
+only fail together through something they share. That rules out — for free, and
+before reading any config — carrier UDP interference, Brutal, `maxIdleTimeout`,
+`rmem_max` (HY2 only), and a re-signed certificate or an unsynced pinned
+fingerprint (TCP only). What remains is the host, both services, a full disk,
+egress, a firewall or a wholesale-blocked IP, suspension for balance, or a
+factor shared on the client side. Split those with SSH on port 22, which does
+not traverse the proxy: reachable means the box is alive and the IP is not
+blocked. Procedure and a read-only paste block: `docs/paste-commands.md` §9.
+
 In that case the three settings above are still worth applying, but only
 `ignoreClientBandwidth` addresses the cause — not as the blocking mechanism but
 as its **trigger**: Brutal sends at the client's declared rate while ignoring
@@ -278,6 +290,7 @@ from a phone".
 | Same, REALITY (see §0.6) | `scripts/add-reality.sh` (did not work on hardware) |
 | Server hardening | `scripts/harden-server.sh` |
 | **Stability reasoning + security review** | `docs/stability-and-security.md` |
+| **Both entrances dead at once** | `docs/paste-commands.md` §9 (read-only) |
 | Phone-only walkthrough, troubleshooting | `docs/mobile-quickstart.md` |
 | Record a specific deployment | `docs/handover-template.md` |
 
