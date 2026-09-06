@@ -278,6 +278,49 @@ Also check this **before rebooting**, not after: a stray unit that grabs a port
 during boot turns a routine reboot into "the proxy is down and I'm debugging
 from a phone".
 
+### 0.11 A phone SSH client reflows pasted text — never hand a phone-only operator a long script
+
+The single most expensive failure of the 2026-09-06 evening session, and it is not
+a scripting bug that better scripting fixes.
+
+Pasting a multi-line block into the user's iOS SSH client **silently inserted and
+dropped spaces inside lines**. Proof came from the user's own echoed transcript:
+
+```text
+printf '\n# Salamander 混淆：所有客户端必须配同一 个密码 ...
+                                          ^ space that is not in the source
+```
+
+The same reflow ate the space in `password: %s`, so the config was written as
+`password:密码` — which YAML still parses, as the *string* `"password:密码"`
+instead of a mapping. Nothing errored. `systemctl is-active` said active. The
+port stayed bound. It surfaced only when a client could not connect.
+
+Two things this breaks that are easy to miss:
+
+1. **Placeholders containing shell metacharacters.** `OBFSPASS='<<<paste here>>>'`
+   looked clear and was catastrophic: `<` and `>` are redirections, and once the
+   quoting was disturbed by reflow the placeholder text itself was written into the
+   config as the password. **Placeholders must be pure ASCII letters, digits and
+   underscores** — `PASTE_OBFS_PASSWORD` — and the script must refuse to run while
+   the placeholder is still present.
+2. **Whitespace-sensitive formats.** YAML is the worst case here, because a
+   missing space after a colon changes the type rather than raising an error.
+
+Rules for anything handed to a phone-only operator:
+
+- **Prefer one short command per step over one long script.** Round trips are
+  cheaper than a silently corrupted config, and every step gets verified as it
+  lands.
+- **Have the script generate its own secrets and print them** (`openssl rand -hex
+  16`) rather than asking the user to paste a value in. Zero edits, zero
+  placeholders, nothing to mangle.
+- **Verify the written result before restarting anything** — `grep -A3 '^obfs:'`
+  and confirm the space after the colon is there. A restart on a corrupted config
+  is what turns a typo into an outage.
+- Values with no spaces (`net.core.rmem_max=16777216`) survive reflow; format
+  strings with embedded prose do not.
+
 ### 0.10 "The TCP entrance is always stable" is no longer true — the whole derivation has to be re-walked
 
 §0.8 and `docs/stability-and-security.md` both rest their central deduction on one
