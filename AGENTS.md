@@ -179,6 +179,33 @@ never tuned by anything.
 Two of them produce exactly the symptoms attributed to carrier interference,
 and both are free to rule out.
 
+**Two questions settle this faster than any config reading.** Ask them first:
+
+1. **Is the TCP inbound stable while HY2 drops?** Both run on the same host and
+   the same egress, differing only in UDP vs TCP. A stable TCP entrance rules
+   out — for free — server crash, service exit, quota exhaustion, full disk,
+   datacenter routing, and wrong credentials. All of those take both down.
+2. **Does restarting the client alone fix it, or is a network change required?**
+   A restart builds a fresh connection: new connection ID, new source port,
+   state cleared. If that does *not* help but switching networks does, then the
+   fault survives a new connection and is keyed to the **source IP** — which
+   rules out idle timeout, NAT mapping expiry, stuck connection state, and
+   Brutal's per-connection self-collapse. What remains is a middlebox dropping
+   that source IP to the server's UDP port.
+
+In that case the three settings above are still worth applying, but only
+`ignoreClientBandwidth` addresses the cause — not as the blocking mechanism but
+as its **trigger**: Brutal sends at the client's declared rate while ignoring
+loss, and a fast, sustained, lossy UDP flow is what makes a middlebox classify
+the traffic as worth dropping. TCP never behaves that way, which is exactly why
+the TCP inbound survives. Escalate from there: obfs (`tune-hy2.sh
+--enable-obfs`) so it no longer looks like Hysteria2, then port hopping, then
+the TCP entrance.
+
+Enabling obfs is a hard cutover — every client must add the same obfs password
+or it stops connecting. Tell the user to switch to the TCP entrance *before*
+running it, so a mistake never leaves them with no way online.
+
 - `scripts/diagnose-hy2.sh` — read-only; separates server-side causes from path
   causes, and reports session durations and client-IP drift from the journal.
 - `scripts/tune-hy2.sh` — applies all three; preserves password, port and obfs,

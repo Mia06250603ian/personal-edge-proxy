@@ -27,6 +27,8 @@
 #   bash tune-hy2.sh
 #   bash tune-hy2.sh --idle 90s        # 想更宽容一点
 #   bash tune-hy2.sh --no-pmtud        # 路径 MTU 探测在某些移动网络上会黑洞
+#   bash tune-hy2.sh --enable-obfs     # 开 Salamander 混淆（客户端要同步改！）
+#   bash tune-hy2.sh --disable-obfs    # 退回不混淆
 #
 # 改完会自己连自己跑一次真实请求来验证；验证不过就自动回滚到改动前的配置。
 #
@@ -40,6 +42,9 @@ SYSCTL_FILE="/etc/sysctl.d/99-hysteria-udp.conf"
 IDLE="60s"
 UDP_IDLE="90s"
 NO_PMTUD=0
+ENABLE_OBFS=0
+DISABLE_OBFS=0
+OBFS_PASS_ARG=""
 
 log()  { printf '\033[32m[+]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[!]\033[0m %s\n' "$*"; }
@@ -47,12 +52,18 @@ die()  { printf '\033[31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --idle)     IDLE="${2:?--idle 需要一个时长，例如 90s}"; shift 2 ;;
-    --no-pmtud) NO_PMTUD=1; shift ;;
-    -h|--help)  sed -n '2,32p' "$0"; exit 0 ;;
-    *)          die "未知参数：$1（用 --help 查看用法）" ;;
+    --idle)         IDLE="${2:?--idle 需要一个时长，例如 90s}"; shift 2 ;;
+    --no-pmtud)     NO_PMTUD=1; shift ;;
+    --enable-obfs)  ENABLE_OBFS=1; shift
+                    # 可选地跟一个自定义混淆密码；不给就随机生成
+                    case "${1:-}" in -*|'') : ;; *) OBFS_PASS_ARG="$1"; shift ;; esac ;;
+    --disable-obfs) DISABLE_OBFS=1; shift ;;
+    -h|--help)      sed -n '2,40p' "$0"; exit 0 ;;
+    *)              die "未知参数：$1（用 --help 查看用法）" ;;
   esac
 done
+
+[ "$ENABLE_OBFS" -eq 1 ] && [ "$DISABLE_OBFS" -eq 1 ] && die "--enable-obfs 和 --disable-obfs 不能一起用"
 
 [ "$(id -u)" -eq 0 ] || die "请用 root 执行：sudo bash $0"
 [ -f "$CONFIG" ] || die "找不到 $CONFIG。这个脚本是给已经装好的 HY2 用的；还没装请先跑 install-hy2-official.sh"
@@ -78,6 +89,42 @@ OBFS_PASS="$(sed -n '/^obfs:/,/^[^[:space:]#]/s/^[[:space:]]*password:[[:space:]
 log "读到现有配置：端口 ${PORT}，SNI ${SNI}，密码已保留"
 if [ -n "$OBFS_TYPE" ] && [ -n "$OBFS_PASS" ]; then
   log "检测到 obfs（${OBFS_TYPE}），会原样保留"
+fi
+
+# ---- obfs 开关 ----
+#
+# Salamander 混淆把裸 QUIC 变成看不出协议的 UDP 流。针对的是"中间设备
+# 认出这是 HY2 之后按源 IP 拦截"这一类问题——重开客户端没用、必须换网络
+# 才能恢复，就是这个特征。
+#
+# ⚠️ 这是一次硬切换：服务端一旦开启，所有没同步加同一个混淆密码的客户端
+# 会立刻连不上。所以务必先切到 TCP 备用入口再动手。
+OBFS_CHANGED=0
+if [ "$DISABLE_OBFS" -eq 1 ]; then
+  if [ -n "$OBFS_TYPE" ]; then
+    warn "将关闭 obfs（所有客户端都要把混淆密码删掉才能连）"
+    OBFS_TYPE=""; OBFS_PASS=""; OBFS_CHANGED=1
+  else
+    log "本来就没开 obfs，--disable-obfs 无事可做"
+  fi
+elif [ "$ENABLE_OBFS" -eq 1 ]; then
+  if [ -n "$OBFS_TYPE" ] && [ -z "$OBFS_PASS_ARG" ]; then
+    log "obfs 已经开着，沿用现有混淆密码（要换请写成 --enable-obfs 新密码）"
+  else
+    if [ -n "$OBFS_PASS_ARG" ]; then
+      case "$OBFS_PASS_ARG" in
+        *[!A-Za-z0-9._-]*) die "混淆密码只能包含字母、数字和 . _ -" ;;
+      esac
+      [ "${#OBFS_PASS_ARG}" -ge 8 ] || die "混淆密码至少 8 位"
+      OBFS_PASS="$OBFS_PASS_ARG"
+    else
+      OBFS_PASS="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)"
+      [ -n "$OBFS_PASS" ] || die "生成混淆密码失败"
+    fi
+    OBFS_TYPE="salamander"
+    OBFS_CHANGED=1
+    warn "将开启 obfs 混淆——客户端不同步改就会连不上，改完看脚本最后输出的配置"
+  fi
 fi
 
 CERT="$(sed -n '/^tls:/,/^[^[:space:]#]/s/^[[:space:]]*cert:[[:space:]]*//p' "$CONFIG" | head -1)"
@@ -263,11 +310,59 @@ cat <<EOF
     disablePathMTUDiscovery ${PMTUD}
     net.core.rmem_max       ${OLD_RMEM} → ${NEW_RMEM}
 
-  密码、端口、obfs 全部保留，现有客户端继续可用。
-  改动前的配置备份在：${BACKUP}
+  密码和端口没变，改动前的配置备份在：
+  ${BACKUP}
 
 ============================================
+EOF
 
+if [ "$OBFS_CHANGED" -eq 1 ] && [ -n "$OBFS_TYPE" ]; then
+  cat <<EOF
+
+############################################################
+#                                                          #
+#   ⚠️  混淆已开启，现在所有客户端都连不上了                #
+#                                                          #
+#   必须给每个客户端加上下面这段，加完才能连。              #
+#   这期间先用 TCP 备用入口（8443）上网。                   #
+#                                                          #
+############################################################
+
+  混淆密码（两台设备要一模一样）：
+
+      ${OBFS_PASS}
+
+  sing-box —— 加进那个 hysteria2 的 outbound 里：
+
+    "obfs": {
+      "type": "salamander",
+      "password": "${OBFS_PASS}"
+    }
+
+  Clash / mihomo —— 加进 my-hy2 那条 proxy 里：
+
+    obfs: salamander
+    obfs-password: ${OBFS_PASS}
+
+  两台都改完再切回 HY2 试。连不上就先切回 tcp，不要在断网状态下瞎改。
+
+  想退回不混淆：bash scripts/tune-hy2.sh --disable-obfs
+
+EOF
+elif [ "$OBFS_CHANGED" -eq 1 ]; then
+  cat <<'EOF'
+
+  ⚠️  混淆已关闭。所有客户端要把 obfs / obfs-password 那几行删掉才能连。
+
+EOF
+else
+  cat <<'EOF'
+  obfs 保持原样，现有客户端继续可用，不用改任何东西。
+
+EOF
+fi
+
+cat <<'EOF'
 顺带把客户端也改一下（可选，但建议）：
 
   客户端里的 up / down（sing-box 是 up_mbps / down_mbps）现在已经被
@@ -278,7 +373,11 @@ cat <<EOF
 
   bash scripts/diagnose-hy2.sh --hours 72
 
-如果 diagnose 显示服务器全部正常、断线仍集中在 UDP 路径上，
-那就是运营商在限制 UDP —— 切 TCP 备用入口（8443 / VLESS+TLS）。
+如果还是「重开没用、换网络才好」，说明中间设备按源 IP 拦你这条流。
+下一步开混淆：
+
+  bash scripts/tune-hy2.sh --enable-obfs
+
+再不行就走 TCP 备用入口（8443 / VLESS+TLS），那条不受 UDP 限制影响。
 
 EOF
