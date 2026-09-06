@@ -125,6 +125,7 @@ openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
   -keyout "$CERT_DIR/key.pem" \
   -out    "$CERT_DIR/cert.pem" \
   -subj   "/CN=${SNI}" \
+    -addext "subjectAltName=DNS:${SNI}" \
   -days   3650 >/dev/null 2>&1
 
 # 官方 systemd 单元以 hysteria 用户运行，证书要让它读得到
