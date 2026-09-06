@@ -217,6 +217,18 @@ online at 4am when it was actually lunchtime.
    Brutal's per-connection self-collapse. What remains is a middlebox dropping
    that source IP to the server's UDP port.
 
+**Run question 1 in reverse when both entrances are dead at once.** The same
+comparison that clears the server when TCP is stable *indicts* it when TCP is
+not: two inbounds on one host and one egress, differing only in UDP vs TCP, can
+only fail together through something they share. That rules out — for free, and
+before reading any config — carrier UDP interference, Brutal, `maxIdleTimeout`,
+`rmem_max` (HY2 only), and a re-signed certificate or an unsynced pinned
+fingerprint (TCP only). What remains is the host, both services, a full disk,
+egress, a firewall or a wholesale-blocked IP, suspension for balance, or a
+factor shared on the client side. Split those with SSH on port 22, which does
+not traverse the proxy: reachable means the box is alive and the IP is not
+blocked. Procedure and a read-only paste block: `docs/paste-commands.md` §9.
+
 In that case the three settings above are still worth applying, but only
 `ignoreClientBandwidth` addresses the cause — not as the blocking mechanism but
 as its **trigger**: Brutal sends at the client's declared rate while ignoring
@@ -266,6 +278,95 @@ Also check this **before rebooting**, not after: a stray unit that grabs a port
 during boot turns a routine reboot into "the proxy is down and I'm debugging
 from a phone".
 
+### 0.11 A phone SSH client reflows pasted text — never hand a phone-only operator a long script
+
+The single most expensive failure of the 2026-09-06 evening session, and it is not
+a scripting bug that better scripting fixes.
+
+Pasting a multi-line block into the user's iOS SSH client **silently inserted and
+dropped spaces inside lines**. Proof came from the user's own echoed transcript:
+
+```text
+printf '\n# Salamander 混淆：所有客户端必须配同一 个密码 ...
+                                          ^ space that is not in the source
+```
+
+The same reflow ate the space in `password: %s`, so the config was written as
+`password:密码` — which YAML still parses, as the *string* `"password:密码"`
+instead of a mapping. Nothing errored. `systemctl is-active` said active. The
+port stayed bound. It surfaced only when a client could not connect.
+
+Two things this breaks that are easy to miss:
+
+1. **Placeholders containing shell metacharacters.** `OBFSPASS='<<<paste here>>>'`
+   looked clear and was catastrophic: `<` and `>` are redirections, and once the
+   quoting was disturbed by reflow the placeholder text itself was written into the
+   config as the password. **Placeholders must be pure ASCII letters, digits and
+   underscores** — `PASTE_OBFS_PASSWORD` — and the script must refuse to run while
+   the placeholder is still present.
+2. **Whitespace-sensitive formats.** YAML is the worst case here, because a
+   missing space after a colon changes the type rather than raising an error.
+
+Rules for anything handed to a phone-only operator:
+
+- **Prefer one short command per step over one long script.** Round trips are
+  cheaper than a silently corrupted config, and every step gets verified as it
+  lands.
+- **Have the script generate its own secrets and print them** (`openssl rand -hex
+  16`) rather than asking the user to paste a value in. Zero edits, zero
+  placeholders, nothing to mangle.
+- **Verify the written result before restarting anything** — `grep -A3 '^obfs:'`
+  and confirm the space after the colon is there. A restart on a corrupted config
+  is what turns a typo into an outage.
+- Values with no spaces (`net.core.rmem_max=16777216`) survive reflow; format
+  strings with embedded prose do not.
+
+### 0.10 "The TCP entrance is always stable" is no longer true — the whole derivation has to be re-walked
+
+§0.8 and `docs/stability-and-security.md` both rest their central deduction on one
+observation: **TCP 8443 stayed up while HY2 dropped**. Two inbounds, one host, one
+egress, differing only in UDP vs TCP — so every shared-failure cause was excluded,
+and the one self-consistent explanation left was "a middlebox dropping
+source-IP → server-UDP-port".
+
+Field logs on 2026-09-06 invalidated that premise. **On mobile cellular:**
+
+| Inbound | What the log shows |
+|---|---|
+| HY2 / UDP 24443 | Connects, authenticates, proxies real traffic (genuine `reqAddr` targets), then the whole connection dies 40s–2min in |
+| VLESS+TLS / TCP 8443 | 204 TLS handshake failures in 3h (EOF / 15s deadline). **Not one success in 24h** |
+
+At the same time, on home broadband (**same carrier**), both inbounds were fine and
+the iPad was using the node continuously. And the user's **previous commercial
+provider worked normally on that same phone, on that same cellular network.**
+
+Together these push the conclusion somewhere different:
+
+- Not "UDP is being blocked" — TCP failed too, different port, different protocol.
+- Not "cellular blocks all proxies" — the old provider was alive on the same path.
+- The only thing the two inbounds share is **the server's IP address**.
+
+**So the thing to suspect is the IP being targeted on that carrier's cellular
+network — not a port and not a protocol.** Note it is not a hard block: the HY2
+handshake completes and carries traffic for tens of seconds, so packets do arrive
+and do come back.
+
+Two rules follow:
+
+1. **The ladder's bottom rung — "switch to the TCP entrance, it is unaffected by
+   UDP restrictions" — can no longer be treated as a fallback.** That sentence was
+   written when TCP was stable; it can now be gone alongside UDP. Confirm that path
+   is actually alive *at this moment* before offering it as a user's safety net.
+2. **Split by network first, protocol second.** When "both entrances are down" holds
+   on one network and not on another, the shared cause is not the server — it is
+   the path from that network to this IP. Read `docs/paste-commands.md` §9 with this
+   qualification.
+
+Also: obfs is the remaining server-side move that changes what the traffic *looks
+like*, and it covers HY2 only. If the phone still fails after obfs, that is strong
+evidence for the IP itself, and the only real remedy is a new IP — keep escalating
+port tricks past that point and you are just moving the same failure around.
+
 ### 0.9 Where things live now
 
 | Need | File |
@@ -278,6 +379,7 @@ from a phone".
 | Same, REALITY (see §0.6) | `scripts/add-reality.sh` (did not work on hardware) |
 | Server hardening | `scripts/harden-server.sh` |
 | **Stability reasoning + security review** | `docs/stability-and-security.md` |
+| **Both entrances dead at once** | `docs/paste-commands.md` §9 (read-only) |
 | Phone-only walkthrough, troubleshooting | `docs/mobile-quickstart.md` |
 | Record a specific deployment | `docs/handover-template.md` |
 
