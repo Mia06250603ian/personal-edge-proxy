@@ -236,6 +236,36 @@ running it, so a mistake never leaves them with no way online.
   self-tests through the tunnel, rolls back on failure.
 - `docs/stability-and-security.md` — full reasoning, plus the security review.
 
+### 0.9 Abandoning an implementation is not the same as removing it
+
+Found on the live host, months after the fact. `§0.1` and `§0.6` record that
+Xray failed twice here and was replaced by hysteria + sing-box. But nobody ever
+disabled the unit, so on audit:
+
+```text
+xray.service   active, enabled at boot, LISTEN on TCP 443
+access.log     0 bytes          <- never served a single connection
+error.log      280 KB, growing  <- scanners hitting 443, handshakes failing
+```
+
+It sat on **443, the most-scanned port on the internet**, purely absorbing
+scans and writing errors — while `add-tcp-entry.sh` had deliberately moved the
+real TCP inbound to 8443 *because* a self-signed cert on 443 is a loud proxy
+signature. The signature was moved; the decoy was left behind.
+
+Costs, none of them obvious: a permanent proxy-shaped target on 443, an error
+log growing without rotation toward a full disk (which takes the working node
+down), and a service that restarts on every boot ready to contend for ports.
+
+**When you switch implementations, disable the old unit in the same change**
+(`systemctl disable --now <unit>`), and check `systemctl list-unit-files
+--state=enabled` plus `ss -lntup` before declaring a deployment clean. A
+dead service is not harmless just because nothing uses it.
+
+Also check this **before rebooting**, not after: a stray unit that grabs a port
+during boot turns a routine reboot into "the proxy is down and I'm debugging
+from a phone".
+
 ### 0.9 Where things live now
 
 | Need | File |
