@@ -108,21 +108,39 @@ else
 fi
 
 mkdir -p "$CERT_DIR"
-# 沿用条件：证书存在，且它的 CN 就是当前要用的 SNI。
+# 沿用条件：证书存在、CN 是当前 SNI，【并且带 SAN】。
 #
-# 早先这里写的是 `grep -qv "CN = $SNI"`，条件正好反了——CN 匹配时重新生成、
-# 不匹配时反而沿用。后果：不带 --domain 时每次重跑都换一张新证书。客户端
-# 勾了"跳过证书验证"所以看不出来，但一旦改用证书指纹校验（见 docs/
-# stability-and-security.md 建议），换证书就等于让所有客户端连不上。
+# 两个坑叠在这几行里，都实机踩过：
+#
+# 1. 早先写的是 `grep -qv "CN = $SNI"`，条件正好反了——CN 匹配时重新生成、
+#    不匹配时反而沿用。
+# 2. 只查 CN 不查 SAN。Go 从 1.15 起只认 SAN、完全忽略 CN，所以一张
+#    "CN 对但没有 SAN" 的旧证书会被永远沿用下去，而它在任何真正开启
+#    校验的客户端上都用不了。实机上正是这样：用户按文档做证书指纹固定，
+#    客户端直接连不上，重跑脚本也修不好——因为脚本认为那张证书没问题。
 if [ -f "$CERT_DIR/cert.pem" ] \
-   && openssl x509 -in "$CERT_DIR/cert.pem" -noout -subject 2>/dev/null | grep -q "CN *= *${SNI}"; then
-  log "沿用已有证书（CN=${SNI}）"
+   && openssl x509 -in "$CERT_DIR/cert.pem" -noout -subject 2>/dev/null | grep -q "CN *= *${SNI}" \
+   && openssl x509 -in "$CERT_DIR/cert.pem" -noout -text 2>/dev/null | grep -q "DNS:${SNI}"; then
+  log "沿用已有证书（CN=${SNI}，含 SAN）"
 else
+  if [ -f "$CERT_DIR/cert.pem" ]; then
+    warn "现有证书不可用（CN 不符或缺少 SAN），重新签发"
+  fi
   log "生成自签证书（CN=${SNI}）"
+  # 先生成到临时目录，验证含 SAN 之后再原子替换。直接写目标路径的话，
+  # 生成失败会毁掉现在还能用的那张证书——而 8443 那条入口正依赖它。
+  CERT_TMP="$(mktemp -d)"
   openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
-    -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" \
+    -keyout "$CERT_TMP/key.pem" -out "$CERT_TMP/cert.pem" \
     -subj "/CN=${SNI}" \
     -addext "subjectAltName=DNS:${SNI}" -days 3650 >/dev/null 2>&1
+  if ! openssl x509 -in "$CERT_TMP/cert.pem" -noout -text 2>/dev/null | grep -q "DNS:${SNI}"; then
+    rm -rf "$CERT_TMP"
+    die "证书生成失败或缺少 SAN。原有证书未被改动。"
+  fi
+  mv "$CERT_TMP/cert.pem" "$CERT_DIR/cert.pem"
+  mv "$CERT_TMP/key.pem" "$CERT_DIR/key.pem"
+  rm -rf "$CERT_TMP"
 fi
 chmod 600 "$CERT_DIR/key.pem"
 chmod 644 "$CERT_DIR/cert.pem"

@@ -253,3 +253,75 @@ Linux 区分大小写，必然失败），密码栏又完全不回显，看不�
 
 **它救不了的**：余额耗尽 / 实例被销毁 / IP 被封 / 运营商在网络层拦截。
 其中只有余额是可以提前预防的，也是唯一"不管它就一定会发生"的。
+
+---
+
+## 8. 重签一张带 SAN 的证书（做证书指纹固定的前提）
+
+**为什么需要**：早期脚本生成的自签证书只有 `-subj "/CN=..."`，没有
+`subjectAltName`。Go 从 1.15 起**只认 SAN、完全忽略 CN**，所以那种证书在任何
+真正开启校验的客户端上都用不了——按文档去做证书指纹固定，客户端必然连不上。
+
+**这一步不会影响现有客户端**：客户端还是 `insecure: true` / `skip-cert-verify: true`
+时根本不验证证书，所以换证书对它没有影响。只会让 sing-box 重启约 2 秒。
+
+> ⚠️ 正在用 TCP 入口的话，先切回 HY2 再做。
+
+```bash
+D=/etc/sing-box; SNI=www.bing.com; T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+B=$D/backup-$(date +%Y%m%d%H%M%S); mkdir -p "$B"
+cp "$D/cert.pem" "$D/key.pem" "$B/" && chmod 600 "$B"/* && echo "已备份旧证书到 $B"
+openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
+  -keyout "$T/key.pem" -out "$T/cert.pem" -subj "/CN=$SNI" \
+  -addext "subjectAltName=DNS:$SNI" -days 3650 >/dev/null 2>&1
+if ! openssl x509 -in "$T/cert.pem" -noout -text 2>/dev/null | grep -q "DNS:$SNI"; then
+  echo "❌ 新证书生成失败或缺 SAN，原证书未动，退出"; exit 1
+fi
+echo "✅ 新证书已生成并含 SAN，开始替换"
+mv "$T/cert.pem" "$D/cert.pem"; mv "$T/key.pem" "$D/key.pem"
+chmod 644 "$D/cert.pem"; chmod 600 "$D/key.pem"
+SU=$(systemctl show sing-box -p User --value 2>/dev/null | head -1)
+[ -n "$SU" ] && [ "$SU" != root ] && id "$SU" >/dev/null 2>&1 && chown "$SU" "$D/cert.pem" "$D/key.pem" && echo "  属主交给 $SU"
+systemctl restart sing-box; sleep 3
+OK=0; systemctl is-active --quiet sing-box && ss -lntup 2>/dev/null | grep -q ':8443' && OK=1
+if [ "$OK" != 1 ]; then
+  echo "❌ 起不来，回滚旧证书"; cp "$B/cert.pem" "$B/key.pem" "$D/"
+  chmod 644 "$D/cert.pem"; chmod 600 "$D/key.pem"
+  [ -n "$SU" ] && chown "$SU" "$D/cert.pem" "$D/key.pem" 2>/dev/null
+  systemctl restart sing-box; sleep 2
+  systemctl is-active --quiet sing-box && echo "已回滚，TCP 入口恢复原状" || echo "回滚后仍异常"
+  exit 1
+fi
+echo "✅ sing-box 正常，TCP 8443 在监听"
+echo; echo "===== 新指纹（Clash/mihomo 用）====="
+openssl x509 -in "$D/cert.pem" -noout -fingerprint -sha256 | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f'
+echo; echo "===== sing-box 用的 certificate 数组 ====="
+awk '{a[NR]=$0} END{print "\"certificate\": ["; for(i=1;i<=NR;i++) printf "  \"%s\"%s\n",a[i],(i<NR?",":""); print "]"}' "$D/cert.pem"
+```
+
+**先验证一次**（`OK` 说明校验真的能过；旧的无 SAN 证书在这一步会失败）：
+
+```bash
+openssl verify -CAfile /etc/sing-box/cert.pem \
+  -verify_hostname www.bing.com /etc/sing-box/cert.pem
+```
+
+### 客户端怎么写
+
+**sing-box**：把 `"insecure": true` 换成上面输出的 `"certificate": [...]` 整段。
+
+**Clash / mihomo**：
+
+```yaml
+    skip-cert-verify: false
+    fingerprint: <上面输出的那 64 位十六进制>
+```
+
+⚠️ **`fingerprint` 和 `client-fingerprint` 是两回事**：前者是证书指纹固定，
+后者是 uTLS 浏览器指纹伪装。写错了固定不生效，还以为配好了。
+
+⚠️ mihomo 若连不上，可试把 `skip-cert-verify` 改回 `true` 但**保留
+`fingerprint`**——它一旦设了就走指纹校验，保护仍在。（sing-box 那边已实测；
+mihomo 的内部行为未同等验证。）
+
+**固定之后服务器再换证书 = 所有客户端立刻连不上**，重签后务必同步更新客户端。
