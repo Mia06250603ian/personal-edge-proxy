@@ -111,7 +111,20 @@ openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
   -subj   "/CN=${SNI}" \
   -days   3650 >/dev/null 2>&1
 chmod 600 "$CERT_DIR/key.pem"
-chown -R nobody:nogroup "$CERT_DIR" 2>/dev/null || chown -R nobody:nobody "$CERT_DIR" 2>/dev/null || true
+chmod 644 "$CERT_DIR/fullchain.pem"
+
+# 只把私钥交给 Xray 实际运行的那个用户，并且只交私钥本身。
+#
+# 早先这里是无条件 `chown -R nobody:nogroup`。nobody 是系统上共享的
+# 通用低权限账号，把 TLS 私钥交给它，等于让任何以 nobody 身份运行的
+# 进程都能读走私钥。这里改成先问 systemd 单元里到底配的是哪个用户。
+XRAY_USER="$(systemctl show xray -p User --value 2>/dev/null || true)"
+if [ -n "$XRAY_USER" ] && [ "$XRAY_USER" != "root" ] && id "$XRAY_USER" >/dev/null 2>&1; then
+  chown "$XRAY_USER" "$CERT_DIR/key.pem"
+  log "私钥属主交给 Xray 的运行用户 ${XRAY_USER}"
+else
+  log "Xray 以 root 运行，私钥保持 root 属主"
+fi
 
 # ---------------------------------------------------------------- 4. 配置
 
@@ -141,7 +154,7 @@ log "写入配置：$CONFIG"
 cat > "$CONFIG" <<EOF
 {
   "log": {
-    "access": "/var/log/xray/access.log",
+    "access": "none",
     "error": "/var/log/xray/error.log",
     "loglevel": "warning"
   },

@@ -159,15 +159,44 @@ guides do not transfer. Before adding a criterion, state which failure it
 prevents *for this document's goal*, and check it does not exclude the hardware
 the document recommends.
 
-### 0.8 Where things live now
+### 0.8 Three Hysteria2 defaults cause chronic drops; the config set none of them
+
+From a "HY2 keeps disconnecting" investigation. The generated config relied on
+upstream defaults for three settings, and **all three defaults are wrong for a
+mobile client**. Before blaming the carrier, confirm these are set:
+
+| Setting | Default | Why it drops connections |
+|---|---|---|
+| `quic.maxIdleTimeout` | **30s** | A phone changing cell, locking, or riding an elevator exceeds 30s of silence easily. Produces the `no recent network activity` disconnect in §0.5. |
+| `ignoreClientBandwidth` | **false** | The client's `down: 150 Mbps` is not advisory — it switches the *server* to Brutal congestion control, which sends at that rate and **deliberately ignores packet loss**. On a phone that cannot sustain it, the excess becomes pure loss, and the resulting steady high-rate UDP is also what carrier QoS targets. Setting it true forces BBR. |
+| `net.core.rmem_max` (sysctl) | **208 KB** | quic-go wants ~7.5 MB. Once the buffer fills the kernel drops incoming UDP outright. Look for `failed to sufficiently increase receive buffer size` in the log, and non-zero `UdpRcvbufErrors` in `nstat`. |
+
+`harden-server.sh` enables BBR, but BBR governs the server's outbound **TCP** to
+target sites — it has nothing to do with the UDP tunnel. The UDP buffer was
+never tuned by anything.
+
+**Do not diagnose "the carrier is blocking UDP" until these three are set.**
+Two of them produce exactly the symptoms attributed to carrier interference,
+and both are free to rule out.
+
+- `scripts/diagnose-hy2.sh` — read-only; separates server-side causes from path
+  causes, and reports session durations and client-IP drift from the journal.
+- `scripts/tune-hy2.sh` — applies all three; preserves password, port and obfs,
+  self-tests through the tunnel, rolls back on failure.
+- `docs/stability-and-security.md` — full reasoning, plus the security review.
+
+### 0.9 Where things live now
 
 | Need | File |
 |---|---|
 | Deploy (recommended) | `scripts/install-hy2-official.sh` |
 | Deploy (Xray, see 0.1) | `scripts/install-hy2.sh` |
+| **Diagnose drops / instability** | `scripts/diagnose-hy2.sh` (read-only) |
+| **Fix the drop causes in §0.8** | `scripts/tune-hy2.sh` |
 | Add a TCP backup inbound | `scripts/add-tcp-entry.sh` (sing-box; verified) |
 | Same, REALITY (see §0.6) | `scripts/add-reality.sh` (did not work on hardware) |
 | Server hardening | `scripts/harden-server.sh` |
+| **Stability reasoning + security review** | `docs/stability-and-security.md` |
 | Phone-only walkthrough, troubleshooting | `docs/mobile-quickstart.md` |
 | Record a specific deployment | `docs/handover-template.md` |
 

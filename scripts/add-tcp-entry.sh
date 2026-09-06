@@ -108,8 +108,15 @@ else
 fi
 
 mkdir -p "$CERT_DIR"
-if [ -n "$DOMAIN" ] && [ -f "$CERT_DIR/cert.pem" ] && openssl x509 -in "$CERT_DIR/cert.pem" -noout -issuer 2>/dev/null | grep -qv "CN *= *${SNI}"; then
-  log "沿用已有证书"
+# 沿用条件：证书存在，且它的 CN 就是当前要用的 SNI。
+#
+# 早先这里写的是 `grep -qv "CN = $SNI"`，条件正好反了——CN 匹配时重新生成、
+# 不匹配时反而沿用。后果：不带 --domain 时每次重跑都换一张新证书。客户端
+# 勾了"跳过证书验证"所以看不出来，但一旦改用证书指纹校验（见 docs/
+# stability-and-security.md 建议），换证书就等于让所有客户端连不上。
+if [ -f "$CERT_DIR/cert.pem" ] \
+   && openssl x509 -in "$CERT_DIR/cert.pem" -noout -subject 2>/dev/null | grep -q "CN *= *${SNI}"; then
+  log "沿用已有证书（CN=${SNI}）"
 else
   log "生成自签证书（CN=${SNI}）"
   openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
@@ -129,6 +136,7 @@ BACKUP=""
 if [ -f "$CONFIG" ]; then
   BACKUP="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
   cp "$CONFIG" "$BACKUP"
+  chmod 600 "$BACKUP"
   warn "已备份原有配置到 $BACKUP"
 fi
 
@@ -146,7 +154,7 @@ write_config() {
 
   cat > "$CONFIG" <<EOF
 {
-  "log": { "level": "info", "timestamp": true },
+  "log": { "level": "warn", "timestamp": true },
   "inbounds": [
     {
       "type": "vless",
@@ -166,6 +174,10 @@ write_config() {
   ${route_block}
 }
 EOF
+
+  # 配置里有 UUID，等同于这条入口的钥匙。新建文件默认是 0644，也就是
+  # 服务器上任何一个非 root 用户都能直接读走它。
+  chmod 600 "$CONFIG"
 }
 
 log "写入配置：$CONFIG"
@@ -179,6 +191,17 @@ for shape in modern legacy; do
   fi
 done
 [ -n "$SHAPE" ] || { cat /tmp/sb-check.log >&2; [ -n "$BACKUP" ] && cp "$BACKUP" "$CONFIG"; die "配置校验失败"; }
+
+# 配置现在是 0600 root。如果 systemd 单元里指定了以别的用户运行，就得把
+# 属主交给它，否则服务会以 "permission denied" 退出——而且是在 systemd
+# 报告启动之后才失败（install-hy2-official.sh 在 hysteria 上踩过这个坑）。
+SB_USER="$(systemctl show sing-box -p User --value 2>/dev/null || true)"
+if [ -n "$SB_USER" ] && [ "$SB_USER" != "root" ] && id "$SB_USER" >/dev/null 2>&1; then
+  log "sing-box 以 ${SB_USER} 运行，移交配置属主"
+  chown "$SB_USER" "$CONFIG"
+  [ -n "$BACKUP" ] && chown "$SB_USER" "$BACKUP"
+  chown "$SB_USER" "$CERT_DIR/key.pem" 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------- 4. systemd
 #
@@ -246,7 +269,21 @@ log "确认监听中 ✓"
 # 结果两个客户端配完都连不通。所以成功的判据是"真的走通了一次请求"。
 
 log "自测：通过这条入口请求一次出口 IP"
-SELFTEST="/tmp/tcp-entry-selftest.json"
+
+# 自测配置里有 UUID。早先它被写成固定路径 /tmp/tcp-entry-selftest.json，
+# 权限 0644 且脚本跑完不删——等于把这条入口的钥匙长期留在 /tmp 里，
+# 服务器上任何用户都能读。改成 0700 的临时目录，并用 trap 保证退出时
+# 一定清掉（包括 die 和 Ctrl-C 的路径）。
+SELFTEST_DIR="$(mktemp -d)"
+chmod 700 "$SELFTEST_DIR"
+SELFTEST="$SELFTEST_DIR/client.json"
+TEST_PID=""
+cleanup_selftest() {
+  [ -n "$TEST_PID" ] && kill "$TEST_PID" 2>/dev/null
+  rm -rf "$SELFTEST_DIR"
+}
+trap cleanup_selftest EXIT
+
 cat > "$SELFTEST" <<EOF
 {
   "log": { "level": "warn" },
@@ -266,16 +303,17 @@ cat > "$SELFTEST" <<EOF
 }
 EOF
 
-sing-box run -c "$SELFTEST" >/tmp/sb-selftest.log 2>&1 &
+sing-box run -c "$SELFTEST" >"$SELFTEST_DIR/client.log" 2>&1 &
 TEST_PID=$!
 sleep 2
 SELF_IP="$(curl -fsS --max-time 12 -x "socks5h://127.0.0.1:${SOCKS_PORT}" https://api.ipify.org 2>/dev/null || true)"
 kill "$TEST_PID" 2>/dev/null || true
 wait "$TEST_PID" 2>/dev/null || true
+TEST_PID=""
 
 if [ -z "$SELF_IP" ]; then
   echo "--- 测试客户端日志 ---" >&2
-  tail -20 /tmp/sb-selftest.log >&2 2>/dev/null || true
+  tail -20 "$SELFTEST_DIR/client.log" >&2 2>/dev/null || true
   echo "--- 服务端日志 ---" >&2
   journalctl -u sing-box -n 20 --no-pager -o cat >&2 2>/dev/null || true
   rollback
