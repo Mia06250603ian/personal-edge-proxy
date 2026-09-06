@@ -105,12 +105,21 @@ fi
 
 log "生成自签证书（SNI: ${SNI}）"
 mkdir -p "$CERT_DIR"
+# 先生成到临时目录，验证含 SAN 之后再原子替换。
+# 直接写目标路径的话，生成失败会毁掉现在还能用的那张证书——
+# 而这台机器上可能正跑着一条依赖它的入口。
+CERT_TMP="$(mktemp -d)"
 openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
-  -keyout "$CERT_DIR/key.pem" \
-  -out    "$CERT_DIR/fullchain.pem" \
-  -subj   "/CN=${SNI}" \
-    -addext "subjectAltName=DNS:${SNI}" \
-  -days   3650 >/dev/null 2>&1
+  -keyout "$CERT_TMP/key.pem" -out "$CERT_TMP/fullchain.pem" \
+  -subj "/CN=${SNI}" -addext "subjectAltName=DNS:${SNI}" \
+  -days 3650 >/dev/null 2>&1
+if ! openssl x509 -in "$CERT_TMP/fullchain.pem" -noout -text 2>/dev/null | grep -q "DNS:${SNI}"; then
+  rm -rf "$CERT_TMP"
+  die "证书生成失败或缺少 SAN。原有证书未被改动。"
+fi
+mv "$CERT_TMP/fullchain.pem" "$CERT_DIR/fullchain.pem"
+mv "$CERT_TMP/key.pem" "$CERT_DIR/key.pem"
+rm -rf "$CERT_TMP"
 chmod 600 "$CERT_DIR/key.pem"
 chmod 644 "$CERT_DIR/fullchain.pem"
 
