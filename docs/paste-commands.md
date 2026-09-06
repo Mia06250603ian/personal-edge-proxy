@@ -210,3 +210,39 @@ printf '  hysteria-server: %s\n  sing-box:        %s\n' "$(systemctl is-active h
 - DNS 的 `detour` 必须指 selector,不能指 `proxy` —— 否则切到 tcp 之后 DNS 还在往 HY2 那条死路发
 - selector / proxy-group 里不能有 `DIRECT` —— iOS 没有系统级 kill switch
 - mihomo 的「UDP 兜底」选最严格那档
+
+---
+
+## 7. 一键恢复 `/fix`（已部署 2026-09-06）
+
+**背景**：用户纯手机运维。Vultr 面板的网页控制台（View Console）能打开，
+但**手机上打字非常困难**——所以退路是存在的，只是"难用到关键时刻用不上"。
+
+解法是把恢复操作压缩成 6 个字符。服务器上已部署：
+
+```text
+/root/good/hysteria.yaml    已知良好的 HY2 配置快照
+/root/good/singbox.json     已知良好的 sing-box 配置快照
+/fix                        恢复脚本
+```
+
+**出事时**（SSH 进不去，只能用 Vultr 网页控制台）：
+
+```sh
+sh /fix
+```
+
+它会把两份配置从快照还原、修正权限与属主、重启两个服务、打印状态。
+
+**维护**：以后确认节点状态良好时，重新取一次快照：
+
+```bash
+cp /etc/hysteria/config.yaml /root/good/hysteria.yaml
+cp /etc/sing-box/config.json /root/good/singbox.json
+chmod 600 /root/good/*
+```
+
+⚠️ **绝不要在配置已经坏掉的时候更新快照**，那会把坏配置存成"良好"。
+
+**它救不了的**：余额耗尽 / 实例被销毁 / IP 被封 / 运营商在网络层拦截。
+其中只有余额是可以提前预防的，也是唯一"不管它就一定会发生"的。
