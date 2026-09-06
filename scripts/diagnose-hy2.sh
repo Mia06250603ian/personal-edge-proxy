@@ -105,11 +105,28 @@ else
   add "VPS 出口不通，问题在机房/账单，不在代理配置。"
 fi
 
+# 拿 TCP 备用入口当对照组。
+#
+# 这是整个排查里最省事的一步：两条入口跑在同一台机器、同一个出口，
+# 唯一的区别就是 UDP 和 TCP。所以「TCP 一直好、HY2 老断」这个事实本身
+# 就排掉了一大半可能性——服务器死机、服务崩掉、流量跑超、磁盘满、
+# 机房路由坏、密码错，这些都会让两条一起完蛋。只剩下 UDP 专属的原因。
+if systemctl is-active --quiet sing-box 2>/dev/null; then
+  ok "TCP 备用入口（sing-box）也在运行 —— 有对照组了"
+  info ""
+  info "  两条入口同机器、同出口，只差 UDP / TCP 这一点。"
+  info "  如果 TCP 一直稳、只有 HY2 断，那么下面这些全部可以排除："
+  info "    服务器宕机 / 服务崩溃 / 流量超额 / 磁盘满 / 机房路由 / 密码错"
+  info "  剩下的只可能是 UDP 专属原因，也就是第 5、6 节那几项。"
+else
+  info "TCP 备用入口没在跑，这次没有对照组"
+fi
+
 # ---------------------------------------------------------------- 4. 断线日志分析（核心）
 
 hdr "4. 最近 ${HOURS} 小时的断线记录"
 
-LOG="$(mktemp)"; trap 'rm -f "$LOG" "$LOG.ev"' EXIT
+LOG="$(mktemp)"; trap 'rm -f "$LOG" "$LOG.ev" "$LOG.rs"' EXIT
 journalctl -u "$UNIT" --since "-${HOURS}h" --no-pager -o cat >"$LOG" 2>/dev/null
 
 # 注意：grep -c 没匹配时会「打印 0 并且以 1 退出」。写成 `|| echo 0` 会得到
@@ -132,6 +149,24 @@ elif [ "$IDLE" -gt 0 ] && [ "$IDLE" -ge $((DISCONN / 2)) ]; then
   add "主因确认：客户端的 UDP 包中途停止到达，服务端 ${IDLE} 次判定空闲超时。服务器是健康的，问题在 UDP 路径上（见下面第 5、6 节的三个可修项）。"
 else
   ok "没有明显的空闲超时模式"
+fi
+
+# 断开原因逐条列出。上面只统计了空闲超时这一种，但服务端记下的原因不止一种，
+# 而"到底以什么理由断的"才是排查里信息量最大的一项——它直接指向失败的那一层。
+info ""
+info "断开原因分布（服务端亲口记的）："
+grep 'client disconnected' "$LOG" 2>/dev/null \
+  | grep -oE '"error": *"[^"]*"' \
+  | sed 's/"error": *"//; s/"$//' \
+  | sort | uniq -c | sort -rn | head -6 >"$LOG.rs" 2>/dev/null
+
+if [ -s "$LOG.rs" ]; then
+  while read -r n reason; do info "  ${n} 次  ${reason}"; done <"$LOG.rs"
+  info ""
+  info "  timeout: no recent network activity  = 客户端的包不再到达（路径问题）"
+  info "  connection refused / closed by peer  = 客户端主动断开（多半是你自己重开了）"
+else
+  info "  （日志里没有带原因的断开记录）"
 fi
 
 # 客户端 IP 是否漂移：移动网络 NAT 映射一变，QUIC 连接必断。
