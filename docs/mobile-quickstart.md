@@ -381,7 +381,10 @@ proxies:
     password: YOUR_HY2_PASSWORD
     sni: www.bing.com
     skip-cert-verify: true      # 对应链接里的 insecure=1，自签证书必需
-    up: "30 Mbps"               # 填接近你真实带宽的值
+    # up / down 不是给客户端自己看的，它们会发给服务端并决定服务端的发包速率。
+    # 填太高 = 服务端按这个速率硬发且无视丢包 = 卡死断线（详见 §6.3.5）。
+    # 服务端设了 ignoreClientBandwidth 之后这两行会被忽略，可以直接删掉。
+    up: "30 Mbps"               # 填接近你真实带宽的值，宁可偏低
     down: "150 Mbps"
 
 proxy-groups:
@@ -445,6 +448,8 @@ sing-box **也不认 `hysteria2://` 分享链接**，它只吃 JSON 配置。新
       "server": "YOUR_SERVER_IP",
       "server_port": 24443,
       "password": "YOUR_HY2_PASSWORD",
+      // 这两个值会发给服务端并决定服务端的发包速率，填太高会卡死断线（见 §6.3.5）。
+      // 服务端设了 ignoreClientBandwidth 之后会被忽略，可以直接删掉这两行。
       "up_mbps": 30,
       "down_mbps": 150,
       "tls": {
@@ -977,7 +982,25 @@ curl -4 -m 8 https://api.ipify.org; echo               # 打印出你的 VPS IP
 | 日志里客户端 IP 中途变了 | 移动网络 NAT 映射漂移，QUIC 连接跟着断 |
 | 一直连不上，日志里**没有**新的 `client connected` | 包根本没到，端口或协议被封 |
 
-按成本从低到高处理：
+> ⚠️ **先别急着下"运营商封 UDP"的结论。** 有三个服务端默认值会造成一模一样的
+> 症状，而且脚本早期生成的配置一个都没设：
+>
+> | 默认值 | 后果 |
+> |---|---|
+> | `maxIdleTimeout` 只有 30 秒 | 手机切基站/锁屏就超时，正是上面这段日志 |
+> | `ignoreClientBandwidth` 为 false | 你客户端里的 `down: 150 Mbps` 会让服务端按 150 Mbps 硬发**并无视丢包** |
+> | `net.core.rmem_max` 只有 208KB | quic-go 要 7.5MB，缓冲区一满内核直接丢包 |
+>
+> 先跑体检，再决定要不要怀疑运营商：
+>
+> ```bash
+> bash scripts/diagnose-hy2.sh    # 只读，不改任何东西
+> bash scripts/tune-hy2.sh        # 三项一起修，可回滚，客户端不用动
+> ```
+>
+> 完整解释见 `docs/stability-and-security.md`。
+
+确认服务端三项都设好之后，还断才轮到下面这些——按成本从低到高：
 
 1. **换个端口**（`--port 8443` 或 `--port 443`）。有些运营商是按端口段做 QoS 的。
 2. **开 Salamander 混淆**。HY2 裸 QUIC 特征明显，混淆后看起来就是普通 UDP 流量。
@@ -1058,6 +1081,14 @@ YAML 不允许重复的顶层键。**同一个键全文件只能有一个**，
 ```
 
 填**接近真实带宽**的值：填太高会丢包反而更慢，填太低会卡上限。
+
+> ⚠️ **"填太高会丢包"的机制比听起来严重。** 这两个值会发给服务端，服务端收到后
+> 会从 BBR 切到 **Brutal 拥塞控制**——按你报的速率硬发，并且**故意把丢包当噪声
+> 忽略掉**。手机跑不到那个速率时，差额全部变成丢包和重传，结果不是"慢一点"，
+> 而是卡死然后断线。
+>
+> 所以：宁可填低，不要填高。或者干脆在服务端设 `ignoreClientBandwidth: true`
+> （`scripts/tune-hy2.sh` 会做），让服务端一律用 BBR 自适应、不听客户端报的数。
 先测一次基准（`fast.com`），改完再测一次，**一次只改一处**才知道哪个有效。
 
 ### 6.5 换了新 VPS 还是频繁弹验证

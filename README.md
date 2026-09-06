@@ -402,6 +402,8 @@ personal-edge-proxy/
 ├── scripts/
 │   ├── install-hy2-official.sh     一条命令部署 Profile A（官方 HY2 → Direct）
 │   ├── install-hy2.sh              同上的 Xray 版（见脚本内说明，不推荐）
+│   ├── diagnose-hy2.sh             节点老是断时先跑这个（只读，不改任何东西）
+│   ├── tune-hy2.sh                 修掉三个造成断线的服务端默认值（可回滚）
 │   ├── add-tcp-entry.sh            加一条 TCP 备用入口（sing-box，已实机验证）
 │   ├── add-reality.sh              同上的 REALITY 版（实机没跑通，见脚本头部）
 │   ├── test-reality.sh             REALITY 握手失败时的服务端自测
@@ -412,6 +414,7 @@ personal-edge-proxy/
 │   └── v2rayn-reality-vision.example.md
 └── docs/
     ├── mobile-quickstart.md        手机版最短路径（新手从这里开始）
+    ├── stability-and-security.md   断线成因分析 + 安全审查（老是断先看这份）
     ├── handover-template.md        交接手册模板（搭好之后填一份自己存）
     ├── warp-outbound.md
     └── static-socks.md

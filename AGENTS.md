@@ -159,15 +159,125 @@ guides do not transfer. Before adding a criterion, state which failure it
 prevents *for this document's goal*, and check it does not exclude the hardware
 the document recommends.
 
-### 0.8 Where things live now
+### 0.8 Three Hysteria2 defaults cause chronic drops; the config set none of them
+
+From a "HY2 keeps disconnecting" investigation. The generated config relied on
+upstream defaults for three settings, and **all three defaults are wrong for a
+mobile client**. Before blaming the carrier, confirm these are set:
+
+| Setting | Default | Why it drops connections |
+|---|---|---|
+| `quic.maxIdleTimeout` | **30s** | A phone changing cell, locking, or riding an elevator exceeds 30s of silence easily. Produces the `no recent network activity` disconnect in §0.5. |
+| `ignoreClientBandwidth` | **false** | The client's `down: 150 Mbps` is not advisory — it switches the *server* to Brutal congestion control, which sends at that rate and **deliberately ignores packet loss**. On a phone that cannot sustain it, the excess becomes pure loss, and the resulting steady high-rate UDP is also what carrier QoS targets. Setting it true forces BBR. |
+| `net.core.rmem_max` (sysctl) | **208 KB** | quic-go wants ~7.5 MB. Once the buffer fills the kernel drops incoming UDP outright. Look for `failed to sufficiently increase receive buffer size` in the log, and non-zero `UdpRcvbufErrors` in `nstat`. |
+
+`harden-server.sh` enables BBR, but BBR governs the server's outbound **TCP** to
+target sites — it has nothing to do with the UDP tunnel. The UDP buffer was
+never tuned by anything.
+
+**Do not diagnose "the carrier is blocking UDP" until these three are set.**
+Two of them produce exactly the symptoms attributed to carrier interference,
+and both are free to rule out.
+
+**A server-side `client disconnected` is NOT a user-visible outage.** This is
+the single easiest way to misread this log. A phone moving between cells gets a
+new carrier IP; the old connection then expires with
+`timeout: no recent network activity` — **byte-for-byte the same log line as a
+real failure** — while the client has already reconnected and the user noticed
+nothing. On one real 2-hour capture, 15 such disconnects contained exactly
+**one** outage the user actually experienced.
+
+Never quote a raw disconnect count back to a user as "it dropped N times". They
+know what they experienced; contradicting them with an inflated number destroys
+your credibility and is simply wrong. Classify first — `diagnose-hy2.sh` now
+does this automatically and prints the local wall-clock time of each real
+outage:
+
+- Ignore sessions shorter than ~5 min: those are a backgrounded phone being
+  suspended and reconnecting, not an outage.
+- If a session ≥3 min is re-established within ~10 min, it was a cell handoff.
+- Only what fails to come back is an outage.
+
+**Log timestamps are UTC** (`Z` suffix, and these servers run UTC). The user is
+almost certainly not. Convert before quoting any time — `--tz` defaults to +8.
+Quoting UTC as if it were their local time will have you asking why they were
+online at 4am when it was actually lunchtime.
+
+**Two questions settle this faster than any config reading.** Ask them first:
+
+1. **Is the TCP inbound stable while HY2 drops?** Both run on the same host and
+   the same egress, differing only in UDP vs TCP. A stable TCP entrance rules
+   out — for free — server crash, service exit, quota exhaustion, full disk,
+   datacenter routing, and wrong credentials. All of those take both down.
+2. **Does restarting the client alone fix it, or is a network change required?**
+   A restart builds a fresh connection: new connection ID, new source port,
+   state cleared. If that does *not* help but switching networks does, then the
+   fault survives a new connection and is keyed to the **source IP** — which
+   rules out idle timeout, NAT mapping expiry, stuck connection state, and
+   Brutal's per-connection self-collapse. What remains is a middlebox dropping
+   that source IP to the server's UDP port.
+
+In that case the three settings above are still worth applying, but only
+`ignoreClientBandwidth` addresses the cause — not as the blocking mechanism but
+as its **trigger**: Brutal sends at the client's declared rate while ignoring
+loss, and a fast, sustained, lossy UDP flow is what makes a middlebox classify
+the traffic as worth dropping. TCP never behaves that way, which is exactly why
+the TCP inbound survives. Escalate from there: obfs (`tune-hy2.sh
+--enable-obfs`) so it no longer looks like Hysteria2, then port hopping, then
+the TCP entrance.
+
+Enabling obfs is a hard cutover — every client must add the same obfs password
+or it stops connecting. Tell the user to switch to the TCP entrance *before*
+running it, so a mistake never leaves them with no way online.
+
+- `scripts/diagnose-hy2.sh` — read-only; separates server-side causes from path
+  causes, and reports session durations and client-IP drift from the journal.
+- `scripts/tune-hy2.sh` — applies all three; preserves password, port and obfs,
+  self-tests through the tunnel, rolls back on failure.
+- `docs/stability-and-security.md` — full reasoning, plus the security review.
+
+### 0.9 Abandoning an implementation is not the same as removing it
+
+Found on the live host, months after the fact. `§0.1` and `§0.6` record that
+Xray failed twice here and was replaced by hysteria + sing-box. But nobody ever
+disabled the unit, so on audit:
+
+```text
+xray.service   active, enabled at boot, LISTEN on TCP 443
+access.log     0 bytes          <- never served a single connection
+error.log      280 KB, growing  <- scanners hitting 443, handshakes failing
+```
+
+It sat on **443, the most-scanned port on the internet**, purely absorbing
+scans and writing errors — while `add-tcp-entry.sh` had deliberately moved the
+real TCP inbound to 8443 *because* a self-signed cert on 443 is a loud proxy
+signature. The signature was moved; the decoy was left behind.
+
+Costs, none of them obvious: a permanent proxy-shaped target on 443, an error
+log growing without rotation toward a full disk (which takes the working node
+down), and a service that restarts on every boot ready to contend for ports.
+
+**When you switch implementations, disable the old unit in the same change**
+(`systemctl disable --now <unit>`), and check `systemctl list-unit-files
+--state=enabled` plus `ss -lntup` before declaring a deployment clean. A
+dead service is not harmless just because nothing uses it.
+
+Also check this **before rebooting**, not after: a stray unit that grabs a port
+during boot turns a routine reboot into "the proxy is down and I'm debugging
+from a phone".
+
+### 0.9 Where things live now
 
 | Need | File |
 |---|---|
 | Deploy (recommended) | `scripts/install-hy2-official.sh` |
 | Deploy (Xray, see 0.1) | `scripts/install-hy2.sh` |
+| **Diagnose drops / instability** | `scripts/diagnose-hy2.sh` (read-only) |
+| **Fix the drop causes in §0.8** | `scripts/tune-hy2.sh` |
 | Add a TCP backup inbound | `scripts/add-tcp-entry.sh` (sing-box; verified) |
 | Same, REALITY (see §0.6) | `scripts/add-reality.sh` (did not work on hardware) |
 | Server hardening | `scripts/harden-server.sh` |
+| **Stability reasoning + security review** | `docs/stability-and-security.md` |
 | Phone-only walkthrough, troubleshooting | `docs/mobile-quickstart.md` |
 | Record a specific deployment | `docs/handover-template.md` |
 

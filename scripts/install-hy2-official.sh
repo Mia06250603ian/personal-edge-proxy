@@ -125,6 +125,7 @@ openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
   -keyout "$CERT_DIR/key.pem" \
   -out    "$CERT_DIR/cert.pem" \
   -subj   "/CN=${SNI}" \
+    -addext "subjectAltName=DNS:${SNI}" \
   -days   3650 >/dev/null 2>&1
 
 # 官方 systemd 单元以 hysteria 用户运行，证书要让它读得到
@@ -155,6 +156,22 @@ tls:
 auth:
   type: password
   password: ${PASSWORD}
+
+# ---- 稳定性设置。默认值在移动网络上会导致频繁断线，详见 docs/stability-and-security.md ----
+
+# 默认 maxIdleTimeout 只有 30s：手机切基站、锁屏、信号抖动很容易超过它，
+# 连接就被判死，表现为"信号满格却断线"。放宽到 60s 能吃掉绝大多数瞬断。
+quic:
+  maxIdleTimeout: 60s
+
+# 不听客户端自报的带宽。客户端配置里的 down: 150 Mbps 会让服务端启用
+# Brutal 拥塞控制，按该速率硬发并【故意无视丢包】；手机实际带宽达不到时，
+# 多出来的全是丢包，表现就是卡死然后断线，还特别容易被运营商 QoS 盯上。
+# 设为 true 后服务端改用 BBR，按实际链路自适应。
+ignoreClientBandwidth: true
+
+# UDP 会话（游戏、DNS、QUIC）的空闲回收时间，默认 60s。
+udpIdleTimeout: 90s
 
 # 让主动探测这个端口的人看到的是 bing，而不是一个代理服务端
 masquerade:
@@ -189,6 +206,25 @@ if id hysteria >/dev/null 2>&1; then
   chown hysteria:hysteria "$CONFIG"
 else
   warn "未找到 hysteria 用户，配置属主保持 root"
+fi
+
+# ---------------------------------------------------------------- 5.5 UDP 缓冲区
+#
+# quic-go（Hysteria2 的 QUIC 实现）需要约 7.5MB 的 UDP 接收缓冲区，
+# Ubuntu 默认只给 208KB。缓冲区一满内核就直接丢弃新到的包，表现为
+# 高速传输时先卡住、然后整条连接断掉。这一步比任何客户端调参都管用。
+
+log "调大 UDP 接收缓冲区"
+cat > /etc/sysctl.d/99-hysteria-udp.conf <<'EOF'
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+EOF
+sysctl --system >/dev/null 2>&1 || true
+RMEM="$(sysctl -n net.core.rmem_max 2>/dev/null || echo 0)"
+if [ "${RMEM:-0}" -ge 7500000 ] 2>/dev/null; then
+  log "net.core.rmem_max = ${RMEM} ✓"
+else
+  warn "UDP 缓冲区没调上去（当前 ${RMEM}），高速传输时可能丢包"
 fi
 
 # ---------------------------------------------------------------- 6. 防火墙
