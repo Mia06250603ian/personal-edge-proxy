@@ -383,10 +383,41 @@ like*, and it covers HY2 only. If the phone still fails after obfs, that is stro
 evidence for the IP itself, and the only real remedy is a new IP — keep escalating
 port tricks past that point and you are just moving the same failure around.
 
+### 0.12 Stacked unverified experiments are worse than the bug they chase
+
+By the end of 2026-09-07 the host carried, all at once: two iptables NAT
+redirects (UDP 443 and 20000:30000 → 24443), Salamander obfs, Brutal, a VLESS
+inbound that had been moved to 443 and back, a duplicate sysctl drop-in, and two
+client devices configured differently from each other — one of them edited as if
+it ran Clash when it actually ran sing-box. Exactly one of those changes was ever
+verified end to end.
+
+The cost is not any single change. It is that no observation can be attributed
+any more: a dead connection could be the redirect, the obfs mismatch, Brutal
+overdriving a 27 Mbps path, or the original fault. Diagnosis needs one variable
+at a time, and there were six.
+
+Rules that follow from this:
+
+- **A change that cannot be verified in the same session gets reverted in the
+  same session.** "Leave it, it does not hurt" is how the pile-up formed —
+  the unused 20000:30000 rule later read as evidence that port hopping was live.
+- **Server-side and client-side halves of one feature land together or not at
+  all.** obfs, port hopping and bandwidth declarations are all two-sided;
+  half-applied, they fail as "cannot connect", which gets misread as a new fault.
+- **All client devices carry the same config.** Per-device tweaks destroy the
+  only free A/B comparison available.
+- **Confirm what client each device actually runs before writing a config for
+  it.** Hours were spent editing Clash YAML for a phone running sing-box.
+- When it has already piled up, do not untangle it in place — restore the
+  baseline (`scripts/restore-baseline.sh`) and re-add one item at a time.
+
 ### 0.9 Where things live now
 
 | Need | File |
 |---|---|
+| **Undo an experiment pile-up / get back to a single known state** | `scripts/restore-baseline.sh` + `docs/RESTORE-BASELINE.md` |
+| **Client side of that baseline (both devices)** | `examples/client-baseline.md` |
 | Deploy (recommended) | `scripts/install-hy2-official.sh` |
 | Deploy (Xray, see 0.1) | `scripts/install-hy2.sh` |
 | **Diagnose drops / instability** | `scripts/diagnose-hy2.sh` (read-only) |
