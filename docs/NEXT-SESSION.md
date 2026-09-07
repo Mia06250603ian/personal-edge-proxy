@@ -271,6 +271,87 @@ iptables -t nat -A PREROUTING -p udp --dport 20000:30000  -j REDIRECT --to-ports
 **iPad 的 sing-box 配置不要动——它一直是好的。**
 （本轮我一度给了 iPad 一份改好的配置，用户指出 iPad 本来就能用。别碰它。）
 
+### 0A.8g 两台客户端的最终配置（密钥已用占位符替换）
+
+**⚠️ 真实的 password / obfs-password / uuid 不写进仓库**，见 §0.9「带密钥的交接
+文档故意不在这个仓库里」。下面用 `PASTE_XXX` 形式的占位符，替换时**只换占位符本身**。
+
+两份都对应服务器当前状态：**HY2 走 UDP 443 + 20000-30000 跳跃段，VLESS 走 TCP 8443。**
+
+**手机 / Clash（mihomo）：**
+
+```yaml
+proxies:
+  - name: my-hy2-obfs
+    type: hysteria2
+    server: PASTE_SERVER_IP
+    port: 443
+    ports: 20000-30000
+    hop-interval: 30
+    password: PASTE_HY2_PASSWORD
+    obfs: salamander
+    obfs-password: PASTE_OBFS_PASSWORD
+    sni: www.bing.com
+    skip-cert-verify: true
+    up: "10 Mbps"
+    down: "50 Mbps"
+
+  - name: my-tcp
+    type: vless
+    server: PASTE_SERVER_IP
+    port: 8443
+    uuid: PASTE_VLESS_UUID
+    network: tcp
+    udp: true
+    tls: true
+    servername: www.bing.com
+    skip-cert-verify: false
+    fingerprint: PASTE_CERT_FINGERPRINT
+
+proxy-groups:
+  - name: PROXY
+    type: fallback
+    url: http://www.gstatic.com/generate_204
+    interval: 30
+    lazy: false
+    proxies:
+      - my-hy2-obfs
+      - my-tcp
+```
+
+**iPad / sing-box（只列 outbounds 的关键部分）：**
+
+```json
+{
+  "type": "hysteria2",
+  "tag": "proxy-obfs",
+  "server": "PASTE_SERVER_IP",
+  "server_ports": ["20000:30000"],
+  "hop_interval": "30s",
+  "up_mbps": 10,
+  "down_mbps": 50,
+  "password": "PASTE_HY2_PASSWORD",
+  "obfs": { "type": "salamander", "password": "PASTE_OBFS_PASSWORD" },
+  "tls": { "enabled": true, "server_name": "www.bing.com", "insecure": true }
+}
+```
+
+VLESS 那个 outbound 的 `server_port` 是 **8443**，`certificate` 数组保持原样照抄。
+
+**几个容易踩的点：**
+
+| 点 | 说明 |
+|---|---|
+| `ports` / `server_ports` 语法不同 | mihomo 用 `20000-30000`（连字符），sing-box 用 `["20000:30000"]`（冒号，数组） |
+| sing-box 里 `server_ports` 与 `server_port` 互斥 | 用了范围就不要再写单端口 |
+| `lazy: false` 必须写 | 默认 `true` 会在无流量时停止探测，健康检查等于没做 |
+| 删掉不带混淆的 HY2 节点 | 服务器已开 Salamander，它连不上，留着只会让健康检查恒失败 |
+| `up`/`down` 别虚报 | Brutal 无条件照着申报值硬推，见 §0A.8c |
+
+**已验证：** 两份都做过语法校验；iPad 换上新配置后服务器日志出现
+`client connected ... tx: 6250000`（= 50 Mbps，正是新的 `down_mbps`），
+证明 sing-box 接受了 `server_ports`，**未因端口跳跃字段而启动失败**。
+
 ### 0A.9 结论：本轮之后，真正站得住的只有三条
 
 1. **不是 IP 被针对** —— 5G、代理全关，SSH TCP 22 连通（实测）
