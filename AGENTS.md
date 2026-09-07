@@ -321,6 +321,32 @@ Rules for anything handed to a phone-only operator:
 - Values with no spaces (`net.core.rmem_max=16777216`) survive reflow; format
   strings with embedded prose do not.
 
+**2026-09-07 — a second reflow mode, on pasted content rather than pasted
+commands: a blank line inserted after every line.** Pasting a PKCS#8 private key
+into `cat > file` produced 57 lines where the key has 28: BEGIN present, END
+present, every byte of base64 intact, and `openssl pkey` still refusing it with
+`Could not read key from ...`. Nothing about the file looks wrong from the
+outside, which is what makes it expensive.
+
+Diagnose without printing key material — non-blank line count against the line
+number of the END marker:
+
+```bash
+grep -c . KEYFILE          # ~28 for a 2048-bit key
+grep -n -- '-----' KEYFILE # END at ~55 means every line was doubled
+```
+
+It is recoverable in place, so do not have the operator paste it again:
+
+```bash
+sed -i '/^[[:space:]]*$/d' KEYFILE
+```
+
+The rule this generalises to: **verify pasted content by parsing it, before
+anything consumes it.** `add-ws-tls.sh` refuses to touch the config until the
+certificate parses, is unexpired, and matches the key — and its failure message
+names this specific fix, because the symptom does not suggest it.
+
 ### 0.10 "The TCP entrance is always stable" is no longer true — the whole derivation has to be re-walked
 
 > **2026-09-07 update — this section's conclusion is now disproven. Read this box first.**
@@ -412,10 +438,88 @@ Rules that follow from this:
 - When it has already piled up, do not untangle it in place — restore the
   baseline (`scripts/restore-baseline.sh`) and re-add one item at a time.
 
+### 0.13 The VLESS entrance is WS + a real certificate now, and it stays on 8443
+
+2026-09-07: the sing-box VLESS inbound was changed from bare TCP + self-signed
+certificate to **WebSocket (`/ws`) + a Cloudflare origin certificate**. Port
+(8443), protocol (VLESS) and UUID are unchanged — `scripts/add-ws-tls.sh` reads
+the UUID and port out of the existing config rather than generating new ones,
+so there is nothing to paste and nothing to mistype.
+
+Three things a later session is likely to get wrong here:
+
+1. **§0.6 says "443 is worth using once a domain and a real certificate exist."
+   Both now exist, and the entrance still stays on 8443** — deliberately. 8443
+   is one of the HTTPS ports Cloudflare will proxy, so the orange-cloud path
+   works unchanged, and moving to 443 buys nothing while spending the scan
+   surface §0.6 was avoiding. Do not migrate it as an "improvement".
+2. **A Cloudflare origin certificate is not publicly trusted.** Through the
+   orange cloud the client validates Cloudflare's edge certificate normally;
+   connecting straight to the VPS IP it sees the origin certificate and must
+   skip verification. Both client shapes are in
+   `docs/vless-ws-tls-cloudflare.md` §3.
+3. **`scripts/restore-baseline.sh` reverts this** to bare TCP + self-signed, and
+   `examples/client-baseline.md` documents that baseline shape, not the current
+   one. Per §0.12 both halves move together: reverting the server without
+   reverting the clients fails as "cannot connect".
+
+The transport is two-sided like obfs — server and both clients land in the same
+session or not at all.
+
+### 0.14 Giving a node a domain name makes it depend on DNS — and DNS goes through the proxy
+
+The most expensive hour of 2026-09-07, and it is a config-shaped fault that
+presents as a network-shaped one.
+
+After the entrance moved to a hostname, the client's node was configured as
+`"server": "cdn.example.com"`. The client then never dialled at all:
+
+```text
+client:  my-tcp has no latency number; my-hy2-obfs does
+server:  zero connections logged — not a failed handshake, no connection at all
+checks:  origin, Cloudflare, certificate, SNI and public DNS all verified good
+```
+
+The loop:
+
+```text
+resolve cdn.example.com → DNS server has detour: PROXY
+                        → PROXY currently selects my-tcp
+                        → my-tcp is waiting on that resolution
+```
+
+Hysteria2 was unaffected because its `server` is a bare IP and needs no
+resolution — which manufactures the false signal "only VLESS is broken" and
+sends the search toward handshakes and certificates.
+
+Two things worth keeping from how this was diagnosed:
+
+- **The first explanation offered was wrong and was killed by one question.**
+  It blamed "HY2 is dead, so DNS has no route" — one latency tap disproved it
+  (HY2 was alive). The trigger is not a dead HY2, it is `PROXY` pointing at the
+  node being resolved. Offer a hypothesis with its falsifier attached, and spend
+  the thirty seconds.
+- **Zero server-side log lines means the client never dialled.** That is a
+  client-side fault every time; do not go read handshake code.
+
+**Fix: remove the dependency — point `server` at a Cloudflare anycast IP and keep
+`server_name` / `Host` on the hostname.** Cloudflare routes on SNI/Host, not on
+which anycast address was dialled, so this is equivalent and strictly better
+here: the hostname never gets looked up at all, so the one unavoidable
+plaintext DNS leak (§0.13's bootstrap problem) disappears with it, and swapping
+the address becomes the tuning knob when a path routes badly. The cost is that
+a retired address breaks the node until it is re-resolved and swapped.
+
+Generalisation beyond this repo: **any outbound whose own address must be
+resolved by a resolver that routes through that same outbound is a deadlock.**
+Configure such a node with a literal address, or give the domain a resolver that
+does not detour through the proxy.
+
 ### 0.9 Where things live now
 
 | Need | File |
 |---|---|
+| **Change the VLESS entrance to WS + a real certificate** | `scripts/add-ws-tls.sh` + `docs/vless-ws-tls-cloudflare.md` |
 | **Undo an experiment pile-up / get back to a single known state** | `scripts/restore-baseline.sh` + `docs/RESTORE-BASELINE.md` |
 | **Client side of that baseline (both devices)** | `examples/client-baseline.md` |
 | Deploy (recommended) | `scripts/install-hy2-official.sh` |

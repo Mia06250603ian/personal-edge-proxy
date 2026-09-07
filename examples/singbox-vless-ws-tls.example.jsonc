@@ -1,0 +1,65 @@
+// 服务端 sing-box：VLESS + WebSocket + TLS（真证书）
+//
+// 这是 scripts/add-ws-tls.sh 写出来的形状，脱敏后放在这里当对照物。
+// 改之前是同一条入口不带 transport（裸 TCP）+ 自签证书，见 scripts/add-tcp-entry.sh。
+//
+// UUID / 域名 / 证书路径都是占位符，真值不进仓库（AGENTS.md §12）。
+//
+// 注释：sing-box 的解析器接受 // 行注释；如果你的版本报错，把注释删掉即可。
+// 不要把注释写成 "//": "..." 这样的键——sing-box 对未知字段是直接报错的。
+//
+// 为什么 VLESS 用 sing-box 而不是 xray：AGENTS.md §0.1 和 §0.6，
+// 同一台机器上 xray 的 inbound 两次都没跑通（一次不 bind 端口，一次全部握手失败）。
+
+{
+  "log": { "level": "warn", "timestamp": true },
+
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "::",
+
+      // 8443 不是 443。自签证书时是为了避开被扫得最狠的端口（AGENTS.md §0.6）；
+      // 换成真证书之后仍然留在 8443，因为 8443 本来就是 Cloudflare 支持回源的
+      // HTTPS 端口，橙云代理照样能用，没有迁 443 的必要。
+      "listen_port": 8443,
+
+      "users": [ { "uuid": "YOUR_UUID" } ],
+
+      "tls": {
+        "enabled": true,
+        "server_name": "YOUR_DOMAIN",
+
+        // Cloudflare 源证书（Origin Certificate）：只被 Cloudflare 信任，
+        // 不在公共信任链里。
+        //   客户端 → Cloudflare → 源站：客户端看到的是 CF 边缘证书，正常校验；
+        //   客户端 → VPS IP 直连：看到的是这张源证书，必须跳过校验或做指纹固定。
+        "certificate_path": "/etc/ssl/YOUR_DOMAIN.pem",
+        "key_path": "/etc/ssl/YOUR_DOMAIN.key"
+      },
+
+      // path 两端必须一模一样，大小写敏感。
+      // 写错的表现是 TLS 握手成功、连接随即被断——很容易被当成"证书问题"去查。
+      "transport": {
+        "type": "ws",
+        "path": "/ws"
+      }
+    }
+  ],
+
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ],
+
+  // 禁止代理客户端访问 VPS 自己的私网地址。
+  // sing-box 1.11 之前的写法是 { "ip_is_private": true, "outbound": "block" }，
+  // 并且要额外声明一个 { "type": "block", "tag": "block" } outbound。
+  // add-ws-tls.sh 两种都写一遍，拿 sing-box check 去问它该用哪种。
+  "route": {
+    "rules": [
+      { "ip_is_private": true, "action": "reject" }
+    ],
+    "final": "direct"
+  }
+}

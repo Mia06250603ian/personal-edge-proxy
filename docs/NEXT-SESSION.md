@@ -4,6 +4,52 @@
 
 ---
 
+## 📌 2026-09-07 最新一次改动：VLESS 入口改成 WS + Cloudflare 源证书（✅ 已实测通过）
+
+**只改了 VLESS 一条入口，HY2 一个字没动，本文其余部分的结论不受影响。**
+
+验证到位了，不是"看着像通了"：服务端自测（真的从这条入口过了一次请求）、
+经 Cloudflare 的链路 curl 得到 `HTTP 400`（sing-box 在应答）、
+iOS sing-box 客户端点测延迟出数字。出口 IP 未变，仍是原来那个新加坡地址。
+
+> **源站 IP 从此不要写进仓库。** 橙云代理之后，源站 IP 是需要藏起来的东西——
+> 写进公开仓库等于把它抵消掉。`AGENTS.md` §12 的占位符表本来就有
+> `YOUR_SERVER_IP`，这次差点漏掉。
+
+| 项 | 值 |
+|---|---|
+| 实现 | sing-box（**不是 xray**，见 `AGENTS.md` §0.1 / §0.6） |
+| 端口 | TCP **8443**，没有迁 443 |
+| 协议 | VLESS，没换 REALITY |
+| UUID | 沿用原来那个，没换 |
+| 传输 | **新增 WebSocket，path `/ws`**（原来是裸 TCP） |
+| 证书 | **Cloudflare 源证书**（原来是自签，CN=`www.bing.com`） |
+| SNI | **DNS 记录用的那个子域名**，不是证书里的主域名——见下方第 3 条 |
+| 子域名 | 取个无聊的名字（`cdn` 之类）。**SNI 是明文的**，叫 `vless.` 等于把协议名写在脸上 |
+| 客户端 | 节点名仍叫 `my-tcp`，只换了内容，所以 selector / proxy-groups 没动 |
+| 客户端 `server` | **写 CF 的 anycast IP，不写域名**——写域名会自己等自己，见下方第 5 条 |
+
+操作步骤、客户端配置、回滚：`docs/vless-ws-tls-cloudflare.md`
+脚本：`scripts/add-ws-tls.sh`　服务端配置对照物：`examples/singbox-vless-ws-tls.example.jsonc`
+
+**两条别记错的：**
+
+1. **这与「HY2 在手机蜂窝上会断」无关**，不是对那个问题的修复，那条线本次零进展。
+2. `scripts/restore-baseline.sh` **会把 VLESS 打回裸 TCP + 自签证书**。跑它之前先决定
+   这条 WS 入口留不留，跑完客户端也要跟着回退。
+3. **子域名的 SNI 要手动指定。** 脚本自动从证书取 SNI 会取到主域名，而 CF 回源发的是
+   子域名，两边对不上。用了子域名就必须 `--sni <完整主机名>`。这一轮踩到过。
+4. **私钥粘贴会被插空行**（28 行变 55 行，openssl 读不出来但文件看着完好）。
+   `sed -i '/^[[:space:]]*$/d'` 删掉即可，不用重贴。详见 `AGENTS.md` §0.11。
+5. **客户端 `server` 千万别写域名。** 写了就是：解析域名要走 DNS → DNS 走 `PROXY`
+   → `PROXY` 选中的正是这条节点 → 自己等自己。现象极具误导性：这条节点没延迟数字、
+   HY2 有（它是裸 IP 不用解析），**服务端日志一条连接都没有**。写死 CF 的 anycast IP，
+   `server_name` / `Host` 保持域名。详见 `AGENTS.md` §0.14。
+6. **延迟高先换 CF 地址，别动服务器。** 两条 A 记录（`104.21.x` / `172.67.x`）都能用，
+   anycast 从不同运营商出去落点不同。只改客户端 `server` 一行。
+
+---
+
 ## ⛔ 2026-09-07 晚追加：**这份文档已经不能直接照做了，先去 `docs/RESTORE-BASELINE.md`**
 
 下面记的是 09-06 / 09-07 两轮排查的过程。到那两轮结束时，服务器上同时挂着
@@ -629,7 +675,7 @@ SSH 22 端口（不走代理）分岔定位。
 | 项 | 状态 |
 |---|---|
 | hysteria-server | active，UDP 24443 监听中 |
-| sing-box | active，TCP 8443 |
+| sing-box | active，TCP 8443 —— **2026-09-07 起为 VLESS + WS(`/ws`) + Cloudflare 源证书**，见本文开头那节 |
 | **Salamander 混淆** | **已开**，密码见服务器 `/etc/hysteria/config.yaml`（原文误把明文写在这里，已抹掉，见下方说明） |
 | `ignoreClientBandwidth` | `true`（即 BBR，Brutal 已关） |
 | `net.core.rmem_max` | 16777216（`/etc/sysctl.d/99-hy2.conf`） |

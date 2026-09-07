@@ -10,6 +10,16 @@
 > Clash 改了很久，实际上跑的是 sing-box；iPad 和手机拿到的字段又不一样。
 > 结果是任何一次现象都没法归因到某一端。**动手前先确认每台设备各跑什么客户端。**
 
+> ⚠️ **2026-09-07 追加：下面 VLESS（`my-tcp`）那一段已经不是现网形态了。**
+> 服务端的 VLESS 入口已改成 **WebSocket + Cloudflare 源证书**（端口仍是 8443，
+> 协议仍是 VLESS，UUID 没换）。**照抄下面的 `my-tcp` 会连不上**——服务端在等
+> WS 握手，裸 TCP 客户端过不去。当前该写什么见
+> `docs/vless-ws-tls-cloudflare.md` §3。
+>
+> 这一节**故意不改**：它是和 `scripts/restore-baseline.sh` 配套的**基线**，
+> 那个脚本会把服务端打回裸 TCP + 自签证书。改了这里，基线的两半就对不上了。
+> HY2 那一段不受影响，仍然是现网形态。
+
 ---
 
 ## 基线长什么样
@@ -19,7 +29,7 @@
 | HY2 | `UDP 24443` |
 | 混淆 | **Salamander 保留**，密码沿用现在这个，不用改 |
 | `up` / `down` | `10` / `50 Mbps` —— **服务端 Brutal 开着，这两个值是生效的** |
-| VLESS | `TCP 8443` |
+| VLESS | `TCP 8443`（基线是裸 TCP；现网已改 WS，见上面的追加框） |
 | 端口跳跃 | **没有**（`ports` / `server_ports` / `hop-interval` 全部不写） |
 | 证书 | 自签，CN = `www.bing.com`，客户端跳过校验 |
 | 节点组 | 手动 `select`，HY2 在前 |
