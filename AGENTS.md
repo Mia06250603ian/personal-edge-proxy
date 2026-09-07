@@ -323,6 +323,22 @@ Rules for anything handed to a phone-only operator:
 
 ### 0.10 "The TCP entrance is always stable" is no longer true — the whole derivation has to be re-walked
 
+> **2026-09-07 update — this section's conclusion is now disproven. Read this box first.**
+>
+> The conclusion below ("suspect the IP being targeted on that carrier's cellular
+> network") was tested directly on 2026-09-07 and **failed**:
+>
+> **With the phone on 5G and every proxy switched off, SSH to the server's TCP 22
+> connected normally.** The IP is fully reachable from that cellular network.
+>
+> So it is *not* the IP. Two entrances failing while port 22 stays up points at
+> **per-port interference with the proxy ports**, not at the address. The follow-up
+> — moving HY2 to UDP 443 via a NAT redirect — got a successful handshake on 5G
+> (verified by egress-IP check), but **durability was never tested**. See
+> `docs/NEXT-SESSION.md` §0A for the full record and the one step still owed.
+>
+> The observations recorded below are still accurate; only the deduction is wrong.
+
 §0.8 and `docs/stability-and-security.md` both rest their central deduction on one
 observation: **TCP 8443 stayed up while HY2 dropped**. Two inbounds, one host, one
 egress, differing only in UDP vs TCP — so every shared-failure cause was excluded,
