@@ -85,7 +85,13 @@ esac
 openssl x509 -in "$CERT" -noout >/dev/null 2>&1 \
   || die "证书解析失败：$CERT（粘贴时被改动过？重新写一次，确认 BEGIN/END 行完整、正文没有多余空格）"
 openssl pkey -in "$KEY" -noout >/dev/null 2>&1 \
-  || die "私钥解析失败：$KEY（同上）"
+  || die "私钥解析失败：$KEY
+     实机最常见的一种（2026-09-07 踩到）：手机 SSH 粘贴时**每行后面被插了一个空行**，
+     BEGIN/END 都在、内容也全，openssl 就是读不出来。先数一下：
+       grep -c . $KEY          # 非空行，2048 位私钥约 28 行
+       grep -n -- '-----' $KEY # END 的行号如果约等于两倍，就是这个问题
+     是的话删掉空行即可，不用重贴：
+       sed -i '/^[[:space:]]*\$/d' $KEY; chmod 600 $KEY"
 
 openssl x509 -in "$CERT" -noout -checkend 0 >/dev/null 2>&1 \
   || die "证书已过期：$(openssl x509 -in "$CERT" -noout -enddate)"
@@ -97,10 +103,19 @@ KEY_PUB="$(openssl pkey -in "$KEY" -pubout 2>/dev/null || true)"
 
 log "证书校验通过：$(openssl x509 -in "$CERT" -noout -subject) / $(openssl x509 -in "$CERT" -noout -enddate)"
 
-# SNI 从证书里取，脚本不写死任何域名。
-# 注意跳过通配符条目：Cloudflare 源证书的 SAN 通常是 *.example.com 和 example.com
-# 两条，第一条拿去当 SNI 是错的。
+# SNI 没给就从证书里取，脚本不写死任何域名。
+#
+# 两个坑，实机都踩到过：
+#
+# 1. 通配符条目要跳过。Cloudflare 源证书的 SAN 通常是 *.example.com 和
+#    example.com 两条，第一条拿去当 SNI 是错的。
+# 2. 自动取值只能取到**证书里的**名字，取不到你**实际用的**那个。
+#    2026-09-07 实机：DNS 记录建在 vless.example.com 上，自动取到的是
+#    example.com，两者对不上——Cloudflare 回源时发的 SNI 是前者。
+#    所以用了子域名就必须 --sni，下面那条 warn 就是提醒这件事。
+SNI_GIVEN=1
 if [ -z "$SNI" ]; then
+  SNI_GIVEN=0
   SNI="$(openssl x509 -in "$CERT" -noout -ext subjectAltName 2>/dev/null \
          | tr ',' '\n' | sed -n 's/.*DNS:\([^ ]*\).*/\1/p' | grep -v '^\*' | head -1 || true)"
 fi
@@ -111,7 +126,13 @@ fi
 case "$SNI" in
   ''|\**) die "没能从证书里取到一个可用的域名（只有通配符或空）。用 --sni 明确指定。" ;;
 esac
-log "SNI（取自证书）：$SNI"
+if [ "$SNI_GIVEN" -eq 1 ]; then
+  log "SNI（--sni 指定）：$SNI"
+else
+  log "SNI（自动取自证书）：$SNI"
+  warn "Cloudflare 上用的如果是子域名（比如 vless.${SNI}），这里取到的是主域名，"
+  warn "和回源时的 SNI 对不上。用 --sni 指定你 DNS 记录里那个完整主机名。"
+fi
 
 # ---------------------------------------------------------------- 2. 现状
 

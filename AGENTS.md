@@ -321,6 +321,32 @@ Rules for anything handed to a phone-only operator:
 - Values with no spaces (`net.core.rmem_max=16777216`) survive reflow; format
   strings with embedded prose do not.
 
+**2026-09-07 — a second reflow mode, on pasted content rather than pasted
+commands: a blank line inserted after every line.** Pasting a PKCS#8 private key
+into `cat > file` produced 57 lines where the key has 28: BEGIN present, END
+present, every byte of base64 intact, and `openssl pkey` still refusing it with
+`Could not read key from ...`. Nothing about the file looks wrong from the
+outside, which is what makes it expensive.
+
+Diagnose without printing key material — non-blank line count against the line
+number of the END marker:
+
+```bash
+grep -c . KEYFILE          # ~28 for a 2048-bit key
+grep -n -- '-----' KEYFILE # END at ~55 means every line was doubled
+```
+
+It is recoverable in place, so do not have the operator paste it again:
+
+```bash
+sed -i '/^[[:space:]]*$/d' KEYFILE
+```
+
+The rule this generalises to: **verify pasted content by parsing it, before
+anything consumes it.** `add-ws-tls.sh` refuses to touch the config until the
+certificate parses, is unexpired, and matches the key — and its failure message
+names this specific fix, because the symptom does not suggest it.
+
 ### 0.10 "The TCP entrance is always stable" is no longer true — the whole derivation has to be re-walked
 
 > **2026-09-07 update — this section's conclusion is now disproven. Read this box first.**
