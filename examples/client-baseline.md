@@ -16,14 +16,20 @@
 
 | 项 | 值 |
 |---|---|
-| HY2 | `UDP 24443`，**无混淆** |
+| HY2 | `UDP 24443` |
+| 混淆 | **Salamander 保留**，密码沿用现在这个，不用改 |
 | VLESS | `TCP 8443` |
 | 端口跳跃 | **没有**（`ports` / `server_ports` / `hop-interval` 全部不写） |
 | 证书 | 自签，CN = `www.bing.com`，客户端跳过校验 |
 | 节点组 | 手动 `select`，HY2 在前 |
 
-三个"曾经加过、现在一律不带"的字段：`obfs`、`ports` / `server_ports`、
-`hop-interval` / `hop_interval`。服务端已经不认它们了。
+要删掉的字段只有跳跃那一组：`ports` / `server_ports` / `hop-interval` /
+`hop_interval`。**`obfs` 保持现状不要动**——服务端也保留着它，两边一致。
+
+> **混淆是两端字段，只改一边就是"连不上"。** 所以这次不动它：少一次两端
+> 同时改的机会，就少一次把"只改了一边"误判成新故障的机会。真要拆的话，
+> 服务端跑 `restore-baseline.sh --no-obfs`，同时把下面两份配置里的
+> `obfs` / `obfs-password` 一起删掉，**同一次做完**。
 
 ---
 
@@ -31,11 +37,13 @@
 
 ```yaml
 proxies:
-  - name: my-hy2
+  - name: my-hy2-obfs
     type: hysteria2
     server: PASTE_SERVER_IP
     port: 24443
     password: PASTE_HY2_PASSWORD
+    obfs: salamander
+    obfs-password: PASTE_OBFS_PASSWORD
     sni: www.bing.com
     skip-cert-verify: true
     up: "10 Mbps"
@@ -56,7 +64,7 @@ proxy-groups:
   - name: PROXY
     type: select
     proxies:
-      - my-hy2
+      - my-hy2-obfs
       - my-tcp
 ```
 
@@ -67,12 +75,16 @@ proxy-groups:
 ```json
 {
   "type": "hysteria2",
-  "tag": "proxy",
+  "tag": "proxy-obfs",
   "server": "PASTE_SERVER_IP",
   "server_port": 24443,
   "up_mbps": 10,
   "down_mbps": 50,
   "password": "PASTE_HY2_PASSWORD",
+  "obfs": {
+    "type": "salamander",
+    "password": "PASTE_OBFS_PASSWORD"
+  },
   "tls": {
     "enabled": true,
     "server_name": "www.bing.com",
@@ -97,7 +109,8 @@ kill switch，一旦落到 DIRECT 就是明文出网。
 | `server_port` 和 `server_ports` 互斥 | sing-box 同理，用了范围就不要再写单端口 |
 | 密码后面要有空格 | 手机 SSH / 输入法会吞空格，`password:密码` 少一个空格类型就从映射变成字符串，**而且不报错** |
 | `up` / `down` 别虚报 | 基线是 `ignoreClientBandwidth: true`（BBR），服务端**根本不看**这两个值；只有重新打开 Brutal 时它们才生效，那时虚报会把多出来的带宽全变成丢包 |
-| 别加回 `obfs` | 服务端基线没开 Salamander，带混淆的节点连不上 |
+| `obfs` 两边必须一致 | 服务端保留着 Salamander。客户端漏了、或密码不一样，节点就是连不上——而且失败形式是"连不上"，很容易被当成新故障 |
+| 混淆密码不写进仓库 | 上面是占位符。真密码在服务器 `/etc/hysteria/config.yaml` 里，`restore-baseline.sh` 跑完也会打印一次 |
 
 ---
 

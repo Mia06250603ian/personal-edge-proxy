@@ -14,13 +14,19 @@
 #   本来会生成的那份配置：一个入口一个端口，没有任何转发层。
 #   客户端那一半见 examples/client-baseline.md。
 #
+#   【例外：Salamander 混淆保留】——按用户决定。混淆改变的是流量看起来像
+#   什么，和"端口 / 转发 / 拥塞控制"这几样不在同一个维度上，不是这次耦合
+#   的来源；而且它已经在两台客户端上跑着。留着它就少一次两端同时改的机会
+#   ——两端同时改正是最容易只改一边、然后把"连不上"误判成新故障的地方。
+#   混淆密码同样从当前配置里原样沿用。要拆掉请显式加 --no-obfs。
+#
 # 它会做的（全部可回退，动手前先整机快照到 /root/pre-baseline-<时间戳>/）：
 #
 #   1. 删掉 nat 表 PREROUTING 里所有 REDIRECT 规则（443 → 24443、
 #      20000:30000 → 24443），并清掉它们的持久化
-#   2. 重写 /etc/hysteria/config.yaml 为基线：UDP 24443、无混淆、
-#      ignoreClientBandwidth: true（BBR）、maxIdleTimeout 60s
-#      —— 密码从当前配置里原样沿用，不会重新生成
+#   2. 重写 /etc/hysteria/config.yaml 为基线：UDP 24443、
+#      ignoreClientBandwidth: true（BBR）、maxIdleTimeout 60s，
+#      混淆原样保留 —— 两个密码都从当前配置里沿用，不会重新生成
 #   3. 把 sing-box 的 VLESS 入口固定回 TCP 8443
 #   4. 收敛 sysctl：只留 99-hysteria-udp.conf 一份
 #   5. 重启两个服务，等端口真的起来再报成功；起不来自动回滚
@@ -31,7 +37,8 @@
 # 用法（在 VPS 上以 root 执行）：
 #
 #   bash restore-baseline.sh --dry-run    只打印会改什么，不动手
-#   bash restore-baseline.sh              真的还原
+#   bash restore-baseline.sh              真的还原（保留混淆）
+#   bash restore-baseline.sh --no-obfs    还原并【拆掉】混淆（两台客户端也要同时删）
 #   bash restore-baseline.sh --snapshot   还原并验证通过后，刷新 /root/good 快照
 #
 set -euo pipefail
@@ -45,6 +52,7 @@ SNI="www.bing.com"
 
 DRY_RUN=0
 SNAPSHOT=0
+KEEP_OBFS=1   # 默认保留混淆，见文件头的说明
 
 log()  { printf '\033[32m[+]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[!]\033[0m %s\n' "$*"; }
@@ -53,9 +61,10 @@ step() { printf '\n\033[36m── %s\033[0m\n' "$*"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dry-run)  DRY_RUN=1;  shift ;;
-    --snapshot) SNAPSHOT=1; shift ;;
-    -h|--help)  sed -n '2,40p' "$0"; exit 0 ;;
+    --dry-run)  DRY_RUN=1;   shift ;;
+    --snapshot) SNAPSHOT=1;  shift ;;
+    --no-obfs)  KEEP_OBFS=0; shift ;;
+    -h|--help)  sed -n '2,46p' "$0"; exit 0 ;;
     *)          die "未知参数：$1（用 --help 查看用法）" ;;
   esac
 done
@@ -84,6 +93,17 @@ HY2_PASSWORD="$(yaml_value "$HY2_CONFIG" auth password || true)"
 [ -n "$HY2_PASSWORD" ] || die "没能从 $HY2_CONFIG 读出 auth.password。请先手动确认配置没坏，不要让脚本猜。"
 
 OBFS_PASSWORD="$(yaml_value "$HY2_CONFIG" obfs password || true)"
+
+# 混淆的四种情况，先定死，后面所有分支都读这两个变量。
+# WRITE_OBFS=1 表示新配置里要写 obfs 段（只有"本来就有 + 要保留"才成立，
+# 脚本绝不会凭空给你开一个客户端不知道的混淆）。
+if [ -n "$OBFS_PASSWORD" ] && [ "$KEEP_OBFS" -eq 1 ]; then
+  WRITE_OBFS=1; OBFS_ACTION="保留 Salamander 混淆，密码原样沿用（客户端不用动这一项）"
+elif [ -n "$OBFS_PASSWORD" ]; then
+  WRITE_OBFS=0; OBFS_ACTION="【删除】Salamander 混淆 —— 两台客户端必须同时删掉 obfs 字段，否则连不上"
+else
+  WRITE_OBFS=0; OBFS_ACTION="本来就没有混淆，保持没有"
+fi
 
 # ---------------------------------------------------------------- 1. 现状盘点
 
@@ -114,16 +134,43 @@ else
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
+  NAT_COUNT="$(printf '%s' "$NAT_RULES" | grep -c . || true)"
   cat <<EOF
 
---dry-run：以上是现状，下面是还原后的目标状态，本次不做任何改动。
+═══════════ --dry-run：本次不做任何改动 ═══════════
 
-  HY2    UDP ${HY2_PORT}，无混淆，ignoreClientBandwidth: true，maxIdleTimeout 60s
-  VLESS  TCP ${SB_PORT}
-  NAT    PREROUTING 里没有任何 REDIRECT 规则
-  客户端 两台都用 examples/client-baseline.md 里的同一份，不带端口跳跃字段
+会改的：
 
-去掉 --dry-run 再跑一次就会真的还原。
+  HY2 监听端口        → UDP ${HY2_PORT}
+  ignoreClientBandwidth → true（BBR。现在是 Brutal，改回来后速度会掉，
+                          要重开走 docs/RESTORE-BASELINE.md 加装项二）
+  quic.maxIdleTimeout → 60s（基线的一部分，不是对断线的修复）
+  udpIdleTimeout      → 90s
+  masquerade / acl    → 恢复成 install-hy2-official.sh 的原样
+  iptables nat        → 删除 ${NAT_COUNT:-0} 条 REDIRECT 规则，并清掉持久化
+  VLESS listen_port   → TCP ${SB_PORT}
+  sysctl              → 只留 99-hysteria-udp.conf 一份
+
+不会改的：
+
+  混淆   ${OBFS_ACTION}
+  密码   auth.password 原样沿用，不重新生成
+  证书   不碰
+  UUID   不碰
+  SSH    不碰
+
+改完之后你还要做的（服务端改完两端就对不上，节点会暂时不通，这是预期的）：
+
+  两台设备都换成 examples/client-baseline.md 里的同一份配置，整段替换。
+  端口回 ${HY2_PORT}，删掉 ports / server_ports / hop-interval 这些跳跃字段，
+  obfs 保持现在的样子不用动，VLESS 端口 ${SB_PORT}。
+
+出问题怎么退：动手前会整机快照到 /root/pre-baseline-<时间戳>/
+（配置、iptables、两个密码都在里面）；HY2 起不来脚本会自己回滚。
+
+═══════════════════════════════════════════════
+
+确认没问题的话，去掉 --dry-run 再跑一次。
 EOF
   exit 0
 fi
@@ -198,6 +245,22 @@ tls:
 auth:
   type: password
   password: ${HY2_PASSWORD}
+EOF
+
+# 混淆是这份基线里唯一被刻意保留的非基线项（用户决定）。它是两端都要带的
+# 字段：服务端有、客户端没有，或者反过来，结果都是"连不上"，而不是"变慢"。
+# 所以这里只在本来就有的时候原样写回去，绝不凭空新开。
+if [ "$WRITE_OBFS" -eq 1 ]; then
+  cat >> "$HY2_CONFIG" <<EOF
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${OBFS_PASSWORD}
+EOF
+fi
+
+cat >> "$HY2_CONFIG" <<EOF
 
 # ---- 以下是 install-hy2-official.sh 的原始基线，逐条含义见该脚本 ----
 
@@ -245,8 +308,17 @@ fi
 grep -E '^(listen|ignoreClientBandwidth):' "$HY2_CONFIG" | sed 's/^/  /'
 # -F：密码里的 . * [ 等字符不能当正则解释，否则这个校验形同虚设。
 grep -qF "password: ${HY2_PASSWORD}" "$HY2_CONFIG" || die "密码没能正确写入，已停下。原文件在 $BACKUP_DIR"
-grep -q '^obfs:' "$HY2_CONFIG" && die "配置里还留着 obfs 段，不该发生，请人工检查"
-log "混淆已移除，端口回到 ${HY2_PORT} ✓"
+
+# 混淆这一项两个方向都要验：该有的时候必须有（少了客户端全部失联），
+# 该没有的时候必须没有（多了同样全部失联）。
+if [ "$WRITE_OBFS" -eq 1 ]; then
+  grep -q '^obfs:' "$HY2_CONFIG" || die "混淆段没写进去，已停下。原文件在 $BACKUP_DIR"
+  grep -qF "password: ${OBFS_PASSWORD}" "$HY2_CONFIG" || die "混淆密码没写对，已停下。原文件在 $BACKUP_DIR"
+  log "混淆保留，密码未变，端口回到 ${HY2_PORT} ✓"
+else
+  grep -q '^obfs:' "$HY2_CONFIG" && die "配置里还留着 obfs 段，不该发生，请人工检查"
+  log "端口回到 ${HY2_PORT}，无混淆 ✓"
+fi
 
 # sysctl 收敛成一份。tune-hy2.sh 留下的 99-hy2.conf 与基线那份内容重叠，
 # 两份并存时"当前生效值来自哪一份"要靠文件名排序去推，没必要。
@@ -352,17 +424,23 @@ for probe in "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip
 done
 [ -n "$SERVER_IP" ] || SERVER_IP="YOUR_SERVER_IP"
 
+if [ "$WRITE_OBFS" -eq 1 ]; then
+  OBFS_SUMMARY="Salamander，密码 ${OBFS_PASSWORD}（未改动，客户端本来就带着）"
+  OBFS_CLIENT_HINT="obfs 保持现状不用动"
+else
+  OBFS_SUMMARY="无"
+  OBFS_CLIENT_HINT="obfs / obfs-password 也要删掉"
+fi
+
 cat <<EOF
 
 ================= 服务端已回到基线 =================
 
   HY2     ${SERVER_IP}  UDP ${HY2_PORT}   密码 ${HY2_PASSWORD}
-          无混淆、无端口跳跃、无 NAT 转发、BBR
+          无端口跳跃、无 NAT 转发、BBR
+  混淆    ${OBFS_SUMMARY}
   VLESS   ${SERVER_IP}  TCP ${SB_PORT}
   SNI     ${SNI}（自签证书，客户端必须跳过校验或做指纹固定）
-
-  分享链接：
-  hysteria2://${HY2_PASSWORD}@${SERVER_IP}:${HY2_PORT}/?insecure=1&sni=${SNI}#my-hy2
 
   还原前的一切都在：${BACKUP_DIR}
 
@@ -373,8 +451,8 @@ cat <<EOF
   两台设备都要换成 examples/client-baseline.md 里的那份配置，
   【整段替换】，不要在旧配置上逐行改。两台用同一份，不要给单台设备开小灶。
 
-  要点：端口 ${HY2_PORT}，删掉 obfs / ports / hop-interval / server_ports
-  这些字段，up/down 按实测填（别虚报）。
+  要点：端口 ${HY2_PORT}，删掉 ports / server_ports / hop-interval 这些
+  跳跃字段，${OBFS_CLIENT_HINT}，up/down 按实测填（别虚报）。
 
 换完之后再谈别的。基线没跑通之前加任何东西，都会回到现在这个"谁在起作用
 说不清"的局面。加装项的顺序见 docs/RESTORE-BASELINE.md。
