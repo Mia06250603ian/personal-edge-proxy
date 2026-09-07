@@ -34,9 +34,25 @@
 
 ---
 
-## 一、mihomo / Clash（`ports` 与 `port` 互斥，这里只用 `port`）
+## 一、mihomo / Clash —— 完整配置（整份替换，不是片段）
+
+`ports` 与 `port` 互斥，这里只用 `port`。
 
 ```yaml
+mixed-port: 7890
+mode: rule
+log-level: info
+ipv6: false
+
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+
 proxies:
   - name: my-hy2-obfs
     type: hysteria2
@@ -67,38 +83,102 @@ proxy-groups:
     proxies:
       - my-hy2-obfs
       - my-tcp
+      # 故意不列 DIRECT：iOS 没有系统级 kill switch，
+      # 一旦落到 DIRECT 就是明文出网，而且不会有任何提示
+
+rules:
+  - MATCH,PROXY
 ```
+
+**必须先全选清空再粘贴。** 贴到文件末尾会让 `proxies:` 出现两次，
+YAML 不允许重复的顶层键，直接报错。
 
 ---
 
-## 二、sing-box（iOS / iPad，只列 outbounds 的关键部分）
+## 二、sing-box（iOS / iPad）—— 完整配置（整份替换）
 
 ```json
 {
-  "type": "hysteria2",
-  "tag": "proxy-obfs",
-  "server": "PASTE_SERVER_IP",
-  "server_port": 24443,
-  "up_mbps": 10,
-  "down_mbps": 50,
-  "password": "PASTE_HY2_PASSWORD",
-  "obfs": {
-    "type": "salamander",
-    "password": "PASTE_OBFS_PASSWORD"
+  "log": { "level": "info" },
+  "dns": {
+    "servers": [
+      {
+        "type": "https",
+        "tag": "dns-proxy",
+        "server": "1.1.1.1",
+        "detour": "PROXY"
+      }
+    ],
+    "strategy": "ipv4_only"
   },
-  "tls": {
-    "enabled": true,
-    "server_name": "www.bing.com",
-    "insecure": true
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": ["172.19.0.1/30"],
+      "auto_route": true,
+      "strict_route": true,
+      "stack": "gvisor"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "selector",
+      "tag": "PROXY",
+      "outbounds": ["my-hy2-obfs", "my-tcp"],
+      "default": "my-hy2-obfs"
+    },
+    {
+      "type": "hysteria2",
+      "tag": "my-hy2-obfs",
+      "server": "PASTE_SERVER_IP",
+      "server_port": 24443,
+      "password": "PASTE_HY2_PASSWORD",
+      "up_mbps": 10,
+      "down_mbps": 50,
+      "obfs": {
+        "type": "salamander",
+        "password": "PASTE_OBFS_PASSWORD"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "insecure": true
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "my-tcp",
+      "server": "PASTE_SERVER_IP",
+      "server_port": 8443,
+      "uuid": "PASTE_VLESS_UUID",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "insecure": true
+      }
+    },
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "PROXY"
   }
 }
 ```
 
-VLESS 那个 outbound 的 `server_port` 填 **8443**，`uuid` 和 TLS 部分照抄原样。
+**DNS 的 `detour` 指的是 selector（`PROXY`），不是某一个具体 outbound。**
+指到 `my-hy2-obfs` 的话，切到备用入口之后 DNS 还在往原来那条死路上发。
 
-DNS 的 `detour` 要指 selector，不要直接指某一个 outbound——否则切到备用入口
-之后 DNS 还在往原来那条死路上发。selector 里不要放 `DIRECT`：iOS 没有系统级
-kill switch，一旦落到 DIRECT 就是明文出网。
+`route.final` 同理指 selector。selector 里不放 `direct`：iOS 没有系统级
+kill switch，一旦落到直连就是明文出网，而且不会有任何提示。
+
+服务端的 VLESS 用户只有 `uuid`，**没有配 flow**，所以这里也不要写 `flow`；
+不写 transport 就是裸 TCP，与服务端一致。
+
+> **DNS 格式在 sing-box 1.12 变过。** 上面是新写法。报
+> `legacy DNS server formats are deprecated` 说明你贴的是旧写法
+> （`"address": "https://1.1.1.1/dns-query"`）。
 
 ---
 
