@@ -34,8 +34,20 @@
 
 > **两个占位符不是一回事，混了就会连不上：**
 > `YOUR_DOMAIN` = 证书那个域名（如 `example.com`，只用来命名证书文件）；
-> `YOUR_HOSTNAME` = **DNS 记录实际用的主机名**（如 `vless.example.com`），
-> 客户端、SNI、`--sni` 全部用它。两者相同就当同一个用。
+> `YOUR_HOSTNAME` = **DNS 记录实际用的主机名**（如 `cdn.example.com`），
+> 客户端的 SNI / `Host`、服务端的 `--sni` 全部用它。两者相同就当同一个用。
+
+> ### 子域名别取名叫 `vless` / `proxy` / `v2ray`
+>
+> **TLS 握手里的 SNI 是明文的**（除非开 ECH，Cloudflare 目前默认没开）。
+> 链路上任何一个 DPI 盒子都能直接读到 `SNI: vless.example.com`——
+> 前面费劲把流量伪装成"访问 Cloudflare 上的普通网站"，域名却把协议名写在脸上。
+>
+> 这和 `AGENTS.md` §0.6 记的"自签证书别挂 443"是同一类错误：**招牌和内容对不上。**
+> 用 `cdn` / `static` / `assets` / `img` 这种满互联网都是的名字。
+> 2026-09-07 最初建的就是 `vless.`，当天改掉了。
+>
+> 注意这不影响账号安全（账号只看出口 IP），**纯粹是隐蔽性**。
 
 | 前提 | 说明 |
 |---|---|
@@ -178,6 +190,47 @@ bash /tmp/add-ws-tls.sh --cert /etc/ssl/YOUR_DOMAIN.pem --key /etc/ssl/YOUR_DOMA
 > **节点名沿用原来的 `my-tcp`，只换里面的内容。** 这样 selector / proxy-groups
 > 一个字都不用动，少一处能出错的地方。2026-09-07 实机就是这么换的。
 
+### ⛔ 先读这一条：`server` 写域名会让这条节点自己等自己
+
+**2026-09-07 实机踩到，花了近一小时。** 症状极具误导性：
+
+- 客户端点测延迟：`my-tcp` 没数字，`my-hy2-obfs` 有数字
+- 服务端日志：**一条连接都没有**（不是握手失败，是根本没拨出去）
+- 服务端、Cloudflare、DNS 逐个查过去**全是好的**
+
+成因是配置层面的循环依赖，和网络无关：
+
+```
+解析 cdn.example.com  →  DNS 走 detour: PROXY
+                      →  PROXY 这时选中的正是 my-tcp
+                      →  而 my-tcp 正等着这个解析结果
+```
+
+**自己等自己。** HY2 不受影响，因为它的 `server` 是裸 IP，压根不需要解析——
+这恰好制造了"只有 VLESS 坏了"的假象，把排查带向握手和证书，方向全错。
+
+> 这个依赖是**从 IP 换成域名那一刻引入的**，以前不存在。
+> 一度以为触发条件是"HY2 死了导致 DNS 没路走"，实测推翻：HY2 活得好好的照样复现。
+> **真正的触发条件是 `PROXY` 当前选中的就是这条节点本身。**
+
+**修法：让这条节点不需要任何解析——`server` 直接写 Cloudflare 的 anycast IP，
+`server_name` 和 `Host` 仍写域名。**
+
+CF 是按 SNI / Host 决定转给谁的，**不看你连的是哪个 IP**，所以这样完全等价，而且更好：
+
+- 隐蔽性没损失，SNI 和 Host 还是你的域名
+- **连那次 DNS 查询都不存在了**，运营商看不到你查过什么（§1 说的那个避不开的泄露，就这么没了）
+- 顺带打开了"优选 IP"这条调优路
+
+代价只有一个：**CF 哪天收回这个地址，节点会突然连不上**。重新解析拿新的换上即可：
+
+```
+curl -sS -H 'accept: application/dns-json' 'https://1.1.1.1/dns-query?name=YOUR_HOSTNAME&type=A'
+```
+
+CF 一般给两条 A 记录（`104.21.x` 和 `172.67.x` 两个段），**两个都能用**。
+延迟高就换另一个试——它们是 anycast，从不同运营商出去落到的机房不一样。
+
 ### 走 Cloudflare（橙云）——推荐
 
 不用跳过证书校验，因为客户端看到的是 CF 的边缘证书。
@@ -187,7 +240,7 @@ bash /tmp/add-ws-tls.sh --cert /etc/ssl/YOUR_DOMAIN.pem --key /etc/ssl/YOUR_DOMA
 ```yaml
   - name: my-tcp
     type: vless
-    server: YOUR_HOSTNAME
+    server: PASTE_CF_ANYCAST_IP
     port: 8443
     uuid: PASTE_VLESS_UUID
     network: ws
@@ -207,7 +260,7 @@ bash /tmp/add-ws-tls.sh --cert /etc/ssl/YOUR_DOMAIN.pem --key /etc/ssl/YOUR_DOMA
 {
   "type": "vless",
   "tag": "my-tcp",
-  "server": "YOUR_HOSTNAME",
+  "server": "PASTE_CF_ANYCAST_IP",
   "server_port": 8443,
   "uuid": "PASTE_VLESS_UUID",
   "tls": {
@@ -216,19 +269,24 @@ bash /tmp/add-ws-tls.sh --cert /etc/ssl/YOUR_DOMAIN.pem --key /etc/ssl/YOUR_DOMA
   },
   "transport": {
     "type": "ws",
-    "path": "/ws"
+    "path": "/ws",
+    "headers": {
+      "Host": "YOUR_HOSTNAME"
+    }
   }
 }
 ```
 
-和改之前那一块的差别只有四处，照着核对最快：
+和改之前那一块的差别，照着核对最快：
 
 | | 旧（裸 TCP + 自签） | 新（WS + CF） |
 |---|---|---|
-| `server` | 服务器 IP | `YOUR_HOSTNAME` |
+| `server` | 服务器 IP | **CF 的 anycast IP**（不是域名，见上面那条 ⛔） |
 | `server_name` | `www.bing.com` | `YOUR_HOSTNAME` |
-| `insecure` | `true` | **整行删掉** |
-| `transport` | 没有 | `ws` + `path: /ws` |
+| `insecure` | `true` | **整行删掉**（CF 边缘是公共信任的真证书） |
+| `transport` | 没有 | `ws` + `path: /ws` + `Host` 头 |
+
+`server` 写 IP 时 **`Host` 头要显式写上**——走 IP 连接，就得自己把域名带上。
 
 ### 直连 VPS IP（灰云 / DNS-only）
 
@@ -274,8 +332,22 @@ curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 15 https://YOUR_HOSTNA
 - 确认 HY2 没被牵连：`systemctl is-active hysteria-server; ss -ulnp | grep 24443`
 
 > **服务器日志里完全没有你的连接记录 = 客户端根本没拨出去**，不是被拒。
-> 2026-09-07 实机就是这样：以为客户端换好了，其实那份配置里 `my-tcp` 还是旧的
-> （IP 直连 + 没有 ws）。**先确认客户端上真的是新配置，再去查服务端。**
+> 2026-09-07 实机两次都栽在这上面，成因还不一样：
+> 一次是配置压根没换（那份里 `my-tcp` 还是旧的），
+> 一次是 §3 那条 DNS 自依赖（配置全对，但节点在解析阶段就卡死了）。
+> **零条日志时先查客户端，别去查握手和证书。**
+
+### 改完客户端一定要断开重连
+
+iOS 上光"保存"配置经常不生效，跑的还是旧那份。**把 VPN 开关完全关掉再打开**，
+不是切节点。2026-09-07 在这上面白绕了一圈。
+
+### 延迟高怎么办：换一个 CF 地址，别动服务器
+
+写死的那个 anycast IP 从你这条线路出去可能绕远。CF 给的两条 A 记录
+（`104.21.x` 和 `172.67.x`）**都能用**，换成另一个再点测延迟，30 秒的事。
+两个都不理想的话，再去找第三方整理的 CF 优选 IP 列表——**只改客户端 `server` 一行，
+`server_name` 和 `Host` 保持域名不变，服务端一个字都不用动。**
 
 ---
 

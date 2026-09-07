@@ -25,7 +25,9 @@ iOS sing-box 客户端点测延迟出数字。出口 IP 未变，仍是原来那
 | 传输 | **新增 WebSocket，path `/ws`**（原来是裸 TCP） |
 | 证书 | **Cloudflare 源证书**（原来是自签，CN=`www.bing.com`） |
 | SNI | **DNS 记录用的那个子域名**，不是证书里的主域名——见下方第 3 条 |
+| 子域名 | 取个无聊的名字（`cdn` 之类）。**SNI 是明文的**，叫 `vless.` 等于把协议名写在脸上 |
 | 客户端 | 节点名仍叫 `my-tcp`，只换了内容，所以 selector / proxy-groups 没动 |
+| 客户端 `server` | **写 CF 的 anycast IP，不写域名**——写域名会自己等自己，见下方第 5 条 |
 
 操作步骤、客户端配置、回滚：`docs/vless-ws-tls-cloudflare.md`
 脚本：`scripts/add-ws-tls.sh`　服务端配置对照物：`examples/singbox-vless-ws-tls.example.jsonc`
@@ -39,6 +41,12 @@ iOS sing-box 客户端点测延迟出数字。出口 IP 未变，仍是原来那
    子域名，两边对不上。用了子域名就必须 `--sni <完整主机名>`。这一轮踩到过。
 4. **私钥粘贴会被插空行**（28 行变 55 行，openssl 读不出来但文件看着完好）。
    `sed -i '/^[[:space:]]*$/d'` 删掉即可，不用重贴。详见 `AGENTS.md` §0.11。
+5. **客户端 `server` 千万别写域名。** 写了就是：解析域名要走 DNS → DNS 走 `PROXY`
+   → `PROXY` 选中的正是这条节点 → 自己等自己。现象极具误导性：这条节点没延迟数字、
+   HY2 有（它是裸 IP 不用解析），**服务端日志一条连接都没有**。写死 CF 的 anycast IP，
+   `server_name` / `Host` 保持域名。详见 `AGENTS.md` §0.14。
+6. **延迟高先换 CF 地址，别动服务器。** 两条 A 记录（`104.21.x` / `172.67.x`）都能用，
+   anycast 从不同运营商出去落点不同。只改客户端 `server` 一行。
 
 ---
 

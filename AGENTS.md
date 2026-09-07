@@ -466,6 +466,55 @@ Three things a later session is likely to get wrong here:
 The transport is two-sided like obfs — server and both clients land in the same
 session or not at all.
 
+### 0.14 Giving a node a domain name makes it depend on DNS — and DNS goes through the proxy
+
+The most expensive hour of 2026-09-07, and it is a config-shaped fault that
+presents as a network-shaped one.
+
+After the entrance moved to a hostname, the client's node was configured as
+`"server": "cdn.example.com"`. The client then never dialled at all:
+
+```text
+client:  my-tcp has no latency number; my-hy2-obfs does
+server:  zero connections logged — not a failed handshake, no connection at all
+checks:  origin, Cloudflare, certificate, SNI and public DNS all verified good
+```
+
+The loop:
+
+```text
+resolve cdn.example.com → DNS server has detour: PROXY
+                        → PROXY currently selects my-tcp
+                        → my-tcp is waiting on that resolution
+```
+
+Hysteria2 was unaffected because its `server` is a bare IP and needs no
+resolution — which manufactures the false signal "only VLESS is broken" and
+sends the search toward handshakes and certificates.
+
+Two things worth keeping from how this was diagnosed:
+
+- **The first explanation offered was wrong and was killed by one question.**
+  It blamed "HY2 is dead, so DNS has no route" — one latency tap disproved it
+  (HY2 was alive). The trigger is not a dead HY2, it is `PROXY` pointing at the
+  node being resolved. Offer a hypothesis with its falsifier attached, and spend
+  the thirty seconds.
+- **Zero server-side log lines means the client never dialled.** That is a
+  client-side fault every time; do not go read handshake code.
+
+**Fix: remove the dependency — point `server` at a Cloudflare anycast IP and keep
+`server_name` / `Host` on the hostname.** Cloudflare routes on SNI/Host, not on
+which anycast address was dialled, so this is equivalent and strictly better
+here: the hostname never gets looked up at all, so the one unavoidable
+plaintext DNS leak (§0.13's bootstrap problem) disappears with it, and swapping
+the address becomes the tuning knob when a path routes badly. The cost is that
+a retired address breaks the node until it is re-resolved and swapped.
+
+Generalisation beyond this repo: **any outbound whose own address must be
+resolved by a resolver that routes through that same outbound is a deadlock.**
+Configure such a node with a literal address, or give the domain a resolver that
+does not detour through the proxy.
+
 ### 0.9 Where things live now
 
 | Need | File |
