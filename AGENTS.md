@@ -412,10 +412,39 @@ Rules that follow from this:
 - When it has already piled up, do not untangle it in place — restore the
   baseline (`scripts/restore-baseline.sh`) and re-add one item at a time.
 
+### 0.13 The VLESS entrance is WS + a real certificate now, and it stays on 8443
+
+2026-09-07: the sing-box VLESS inbound was changed from bare TCP + self-signed
+certificate to **WebSocket (`/ws`) + a Cloudflare origin certificate**. Port
+(8443), protocol (VLESS) and UUID are unchanged — `scripts/add-ws-tls.sh` reads
+the UUID and port out of the existing config rather than generating new ones,
+so there is nothing to paste and nothing to mistype.
+
+Three things a later session is likely to get wrong here:
+
+1. **§0.6 says "443 is worth using once a domain and a real certificate exist."
+   Both now exist, and the entrance still stays on 8443** — deliberately. 8443
+   is one of the HTTPS ports Cloudflare will proxy, so the orange-cloud path
+   works unchanged, and moving to 443 buys nothing while spending the scan
+   surface §0.6 was avoiding. Do not migrate it as an "improvement".
+2. **A Cloudflare origin certificate is not publicly trusted.** Through the
+   orange cloud the client validates Cloudflare's edge certificate normally;
+   connecting straight to the VPS IP it sees the origin certificate and must
+   skip verification. Both client shapes are in
+   `docs/vless-ws-tls-cloudflare.md` §3.
+3. **`scripts/restore-baseline.sh` reverts this** to bare TCP + self-signed, and
+   `examples/client-baseline.md` documents that baseline shape, not the current
+   one. Per §0.12 both halves move together: reverting the server without
+   reverting the clients fails as "cannot connect".
+
+The transport is two-sided like obfs — server and both clients land in the same
+session or not at all.
+
 ### 0.9 Where things live now
 
 | Need | File |
 |---|---|
+| **Change the VLESS entrance to WS + a real certificate** | `scripts/add-ws-tls.sh` + `docs/vless-ws-tls-cloudflare.md` |
 | **Undo an experiment pile-up / get back to a single known state** | `scripts/restore-baseline.sh` + `docs/RESTORE-BASELINE.md` |
 | **Client side of that baseline (both devices)** | `examples/client-baseline.md` |
 | Deploy (recommended) | `scripts/install-hy2-official.sh` |

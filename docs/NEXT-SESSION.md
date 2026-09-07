@@ -4,6 +4,30 @@
 
 ---
 
+## 📌 2026-09-07 最新一次改动：VLESS 入口改成 WS + Cloudflare 源证书
+
+**只改了 VLESS 一条入口，HY2 一个字没动，本文其余部分的结论不受影响。**
+
+| 项 | 值 |
+|---|---|
+| 实现 | sing-box（**不是 xray**，见 `AGENTS.md` §0.1 / §0.6） |
+| 端口 | TCP **8443**，没有迁 443 |
+| 协议 | VLESS，没换 REALITY |
+| UUID | 沿用原来那个，没换 |
+| 传输 | **新增 WebSocket，path `/ws`**（原来是裸 TCP） |
+| 证书 | **Cloudflare 源证书**（原来是自签，CN=`www.bing.com`） |
+
+操作步骤、客户端配置、回滚：`docs/vless-ws-tls-cloudflare.md`
+脚本：`scripts/add-ws-tls.sh`　服务端配置对照物：`examples/singbox-vless-ws-tls.example.jsonc`
+
+**两条别记错的：**
+
+1. **这与「HY2 在手机蜂窝上会断」无关**，不是对那个问题的修复，那条线本次零进展。
+2. `scripts/restore-baseline.sh` **会把 VLESS 打回裸 TCP + 自签证书**。跑它之前先决定
+   这条 WS 入口留不留，跑完客户端也要跟着回退。
+
+---
+
 ## ⛔ 2026-09-07 晚追加：**这份文档已经不能直接照做了，先去 `docs/RESTORE-BASELINE.md`**
 
 下面记的是 09-06 / 09-07 两轮排查的过程。到那两轮结束时，服务器上同时挂着
@@ -629,7 +653,7 @@ SSH 22 端口（不走代理）分岔定位。
 | 项 | 状态 |
 |---|---|
 | hysteria-server | active，UDP 24443 监听中 |
-| sing-box | active，TCP 8443 |
+| sing-box | active，TCP 8443 —— **2026-09-07 起为 VLESS + WS(`/ws`) + Cloudflare 源证书**，见本文开头那节 |
 | **Salamander 混淆** | **已开**，密码见服务器 `/etc/hysteria/config.yaml`（原文误把明文写在这里，已抹掉，见下方说明） |
 | `ignoreClientBandwidth` | `true`（即 BBR，Brutal 已关） |
 | `net.core.rmem_max` | 16777216（`/etc/sysctl.d/99-hy2.conf`） |

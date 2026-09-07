@@ -405,16 +405,20 @@ personal-edge-proxy/
 │   ├── diagnose-hy2.sh             节点老是断时先跑这个（只读，不改任何东西）
 │   ├── tune-hy2.sh                 修掉三个造成断线的服务端默认值（可回滚）
 │   ├── add-tcp-entry.sh            加一条 TCP 备用入口（sing-box，已实机验证）
+│   ├── add-ws-tls.sh               把上面那条入口改成 WS + 真证书（端口/UUID/协议不变）
 │   ├── add-reality.sh              同上的 REALITY 版（实机没跑通，见脚本头部）
 │   ├── test-reality.sh             REALITY 握手失败时的服务端自测
 │   └── harden-server.sh            服务器基础加固（fail2ban / 自动补丁 / BBR）
 ├── examples/
 │   ├── xray-server.example.jsonc
+│   ├── singbox-vless-ws-tls.example.jsonc   服务端 VLESS + WS + 真证书
+│   ├── client-baseline.md
 │   ├── v2rayn-hysteria2.example.md
 │   └── v2rayn-reality-vision.example.md
 └── docs/
     ├── mobile-quickstart.md        手机版最短路径（新手从这里开始）
     ├── stability-and-security.md   断线成因分析 + 安全审查（老是断先看这份）
+    ├── vless-ws-tls-cloudflare.md  VLESS 换成 WS + Cloudflare 源证书（一次一条短命令）
     ├── handover-template.md        交接手册模板（搭好之后填一份自己存）
     ├── warp-outbound.md
     └── static-socks.md
