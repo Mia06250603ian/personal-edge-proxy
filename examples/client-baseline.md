@@ -18,6 +18,7 @@
 |---|---|
 | HY2 | `UDP 24443` |
 | 混淆 | **Salamander 保留**，密码沿用现在这个，不用改 |
+| `up` / `down` | `10` / `50 Mbps` —— **服务端 Brutal 开着，这两个值是生效的** |
 | VLESS | `TCP 8443` |
 | 端口跳跃 | **没有**（`ports` / `server_ports` / `hop-interval` 全部不写） |
 | 证书 | 自签，CN = `www.bing.com`，客户端跳过校验 |
@@ -108,7 +109,7 @@ kill switch，一旦落到 DIRECT 就是明文出网。
 | `port` 和 `ports` 互斥 | mihomo 文档写明二选一。2026-09-07 两个都写了，节点直接无效，客户端**根本没往外拨**，日志里连 `client connected` 都不会有 |
 | `server_port` 和 `server_ports` 互斥 | sing-box 同理，用了范围就不要再写单端口 |
 | 密码后面要有空格 | 手机 SSH / 输入法会吞空格，`password:密码` 少一个空格类型就从映射变成字符串，**而且不报错** |
-| `up` / `down` 别虚报 | 基线是 `ignoreClientBandwidth: true`（BBR），服务端**根本不看**这两个值；只有重新打开 Brutal 时它们才生效，那时虚报会把多出来的带宽全变成丢包 |
+| **`up` / `down` 别虚报** | 服务端保留着 Brutal（`ignoreClientBandwidth: false`），会**照着你申报的速率硬推并无视丢包**。这条路实测约 27 Mbps，写 `50/10`；写 `150/30` 多出来的部分会原样变成丢包——09-07 查到的 30% 丢包里，相当一部分可能就是这么来的 |
 | `obfs` 两边必须一致 | 服务端保留着 Salamander。客户端漏了、或密码不一样，节点就是连不上——而且失败形式是"连不上"，很容易被当成新故障 |
 | 混淆密码不写进仓库 | 上面是占位符。真密码在服务器 `/etc/hysteria/config.yaml` 里，`restore-baseline.sh` 跑完也会打印一次 |
 

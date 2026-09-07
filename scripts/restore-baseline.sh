@@ -14,19 +14,28 @@
 #   本来会生成的那份配置：一个入口一个端口，没有任何转发层。
 #   客户端那一半见 examples/client-baseline.md。
 #
-#   【例外：Salamander 混淆保留】——按用户决定。混淆改变的是流量看起来像
-#   什么，和"端口 / 转发 / 拥塞控制"这几样不在同一个维度上，不是这次耦合
-#   的来源；而且它已经在两台客户端上跑着。留着它就少一次两端同时改的机会
-#   ——两端同时改正是最容易只改一边、然后把"连不上"误判成新故障的地方。
-#   混淆密码同样从当前配置里原样沿用。要拆掉请显式加 --no-obfs。
+#   【两个例外：混淆和 Brutal 保留】——按用户决定。这两样和"端口 / 转发 /
+#   超时"不在同一个维度上，不是这次耦合的来源，而且都已经在这台机器上验证过：
+#
+#     - Salamander 混淆：改变的是流量看起来像什么。它是两端字段，服务端和
+#       两台客户端目前一致；动它就要两端同时改，而那正是最容易只改一边、
+#       再把"连不上"误判成新故障的地方。
+#     - Brutal（ignoreClientBandwidth: false）：09-07 iPad 实测下载
+#       5.74 → 27.3 Mbps、抖动 226 → 22.6ms，已确认留用。
+#
+#   两个密码和拥塞控制的当前取值都从现有配置里原样沿用。
+#   要拆请显式加 --no-obfs / --bbr。
+#
+#   ⚠️ Brutal 开着时，客户端申报的 up/down 是【生效】的：服务端会照着申报
+#   的速率硬推并无视丢包，虚报多少就多丢多少。两台客户端必须填实测值。
 #
 # 它会做的（全部可回退，动手前先整机快照到 /root/pre-baseline-<时间戳>/）：
 #
 #   1. 删掉 nat 表 PREROUTING 里所有 REDIRECT 规则（443 → 24443、
 #      20000:30000 → 24443），并清掉它们的持久化
-#   2. 重写 /etc/hysteria/config.yaml 为基线：UDP 24443、
-#      ignoreClientBandwidth: true（BBR）、maxIdleTimeout 60s，
-#      混淆原样保留 —— 两个密码都从当前配置里沿用，不会重新生成
+#   2. 重写 /etc/hysteria/config.yaml：UDP 24443、maxIdleTimeout 60s、
+#      udpIdleTimeout 90s、masquerade / acl 回基线，
+#      混淆和拥塞控制原样保留，密码不会重新生成
 #   3. 把 sing-box 的 VLESS 入口固定回 TCP 8443
 #   4. 收敛 sysctl：只留 99-hysteria-udp.conf 一份
 #   5. 重启两个服务，等端口真的起来再报成功；起不来自动回滚
@@ -37,8 +46,9 @@
 # 用法（在 VPS 上以 root 执行）：
 #
 #   bash restore-baseline.sh --dry-run    只打印会改什么，不动手
-#   bash restore-baseline.sh              真的还原（保留混淆）
+#   bash restore-baseline.sh              真的还原（混淆和 Brutal 都保留）
 #   bash restore-baseline.sh --no-obfs    还原并【拆掉】混淆（两台客户端也要同时删）
+#   bash restore-baseline.sh --bbr        还原并【关掉】Brutal，回到基线的 BBR
 #   bash restore-baseline.sh --snapshot   还原并验证通过后，刷新 /root/good 快照
 #
 set -euo pipefail
@@ -52,7 +62,8 @@ SNI="www.bing.com"
 
 DRY_RUN=0
 SNAPSHOT=0
-KEEP_OBFS=1   # 默认保留混淆，见文件头的说明
+KEEP_OBFS=1     # 默认保留混淆，见文件头的说明
+KEEP_BRUTAL=1   # 默认沿用现在的拥塞控制（Brutal），同上
 
 log()  { printf '\033[32m[+]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[!]\033[0m %s\n' "$*"; }
@@ -63,7 +74,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)  DRY_RUN=1;   shift ;;
     --snapshot) SNAPSHOT=1;  shift ;;
-    --no-obfs)  KEEP_OBFS=0; shift ;;
+    --no-obfs)  KEEP_OBFS=0;   shift ;;
+    --bbr)      KEEP_BRUTAL=0; shift ;;
     -h|--help)  sed -n '2,46p' "$0"; exit 0 ;;
     *)          die "未知参数：$1（用 --help 查看用法）" ;;
   esac
@@ -105,6 +117,29 @@ else
   WRITE_OBFS=0; OBFS_ACTION="本来就没有混淆，保持没有"
 fi
 
+# 拥塞控制同理。基线是 true（BBR），但 Brutal 已经在这台机器上实测过并留用
+# （09-07：下载 5.74 → 27.3 Mbps，抖动 226 → 22.6ms），所以默认沿用现状。
+# 配置里没写这一项时，Hysteria2 的默认是 false，也就是 Brutal——这里把它显式
+# 写出来，省得下次又要靠"默认值是什么"去推。
+CUR_ICB_VALUE="$(grep -E '^ignoreClientBandwidth:' "$HY2_CONFIG" | head -n1 | awk '{print $2}' || true)"
+[ "$CUR_ICB_VALUE" = "true" ] || CUR_ICB_VALUE="false"
+
+if [ "$KEEP_BRUTAL" -eq 1 ]; then
+  NEW_ICB="$CUR_ICB_VALUE"
+  if [ "$NEW_ICB" = "false" ]; then
+    ICB_ACTION="沿用现状：ignoreClientBandwidth: false（Brutal 继续开着）"
+  else
+    ICB_ACTION="沿用现状：ignoreClientBandwidth: true（BBR）"
+  fi
+else
+  NEW_ICB="true"
+  if [ "$CUR_ICB_VALUE" = "false" ]; then
+    ICB_ACTION="【改回基线】ignoreClientBandwidth: true —— 关掉 Brutal，速度会掉"
+  else
+    ICB_ACTION="ignoreClientBandwidth: true（本来就是，不变）"
+  fi
+fi
+
 # ---------------------------------------------------------------- 1. 现状盘点
 
 step "1/6  盘点当前状态"
@@ -133,6 +168,16 @@ else
   warn "找不到 $SB_CONFIG，跳过 sing-box 部分"
 fi
 
+# Brutal 开着时 up/down 是生效字段，客户端填错就等于自己给自己造丢包，
+# 所以这句只在 Brutal 保留时出现——不相关的时候不要多印一行吓人。
+if [ "$NEW_ICB" = "false" ]; then
+  ICB_CLIENT_WARN='
+  ⚠️ Brutal 保留着，客户端的 up / down 是【生效】的：服务端会照着申报值硬推
+     并无视丢包。这条路实测约 27 Mbps，填 50/10，不要再写 150/30。'
+else
+  ICB_CLIENT_WARN=''
+fi
+
 if [ "$DRY_RUN" -eq 1 ]; then
   NAT_COUNT="$(printf '%s' "$NAT_RULES" | grep -c . || true)"
   cat <<EOF
@@ -142,8 +187,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
 会改的：
 
   HY2 监听端口        → UDP ${HY2_PORT}
-  ignoreClientBandwidth → true（BBR。现在是 Brutal，改回来后速度会掉，
-                          要重开走 docs/RESTORE-BASELINE.md 加装项二）
   quic.maxIdleTimeout → 60s（基线的一部分，不是对断线的修复）
   udpIdleTimeout      → 90s
   masquerade / acl    → 恢复成 install-hy2-official.sh 的原样
@@ -153,17 +196,19 @@ if [ "$DRY_RUN" -eq 1 ]; then
 
 不会改的：
 
-  混淆   ${OBFS_ACTION}
-  密码   auth.password 原样沿用，不重新生成
-  证书   不碰
-  UUID   不碰
-  SSH    不碰
+  混淆       ${OBFS_ACTION}
+  拥塞控制   ${ICB_ACTION}
+  密码       auth.password 原样沿用，不重新生成
+  证书       不碰
+  UUID       不碰
+  SSH        不碰
 
 改完之后你还要做的（服务端改完两端就对不上，节点会暂时不通，这是预期的）：
 
   两台设备都换成 examples/client-baseline.md 里的同一份配置，整段替换。
   端口回 ${HY2_PORT}，删掉 ports / server_ports / hop-interval 这些跳跃字段，
   obfs 保持现在的样子不用动，VLESS 端口 ${SB_PORT}。
+${ICB_CLIENT_WARN}
 
 出问题怎么退：动手前会整机快照到 /root/pre-baseline-<时间戳>/
 （配置、iptables、两个密码都在里面）；HY2 起不来脚本会自己回滚。
@@ -271,10 +316,15 @@ quic:
   maxIdleTimeout: 60s
 
 # true = 忽略客户端自报带宽，服务端用 BBR 自适应。
-# false 会启用 Brutal（按客户端申报的速率硬推并无视丢包）。
-# 基线是 true。要开 Brutal 请走 docs/RESTORE-BASELINE.md 的"加装项二"，
-# 一次只加一项，加完记录实测结果。
-ignoreClientBandwidth: true
+# false = Brutal：按客户端申报的速率硬推并【无视丢包】。
+#
+# install-hy2-official.sh 的基线值是 true，但这台机器实测下来 Brutal 明显更好
+# （09-07 iPad：下载 5.74 → 27.3 Mbps，抖动 226 → 22.6ms），所以这一项按现状
+# 沿用，不强行改回基线。
+#
+# ⚠️ 只要这里是 false，客户端的 up / down 就是【生效】的，必须填实测值。
+# 这条路实测约 27 Mbps，别再写 150——多申报的部分会原样变成丢包。
+ignoreClientBandwidth: ${NEW_ICB}
 
 udpIdleTimeout: 90s
 
@@ -308,6 +358,7 @@ fi
 grep -E '^(listen|ignoreClientBandwidth):' "$HY2_CONFIG" | sed 's/^/  /'
 # -F：密码里的 . * [ 等字符不能当正则解释，否则这个校验形同虚设。
 grep -qF "password: ${HY2_PASSWORD}" "$HY2_CONFIG" || die "密码没能正确写入，已停下。原文件在 $BACKUP_DIR"
+grep -qE "^ignoreClientBandwidth: ${NEW_ICB}\$" "$HY2_CONFIG" || die "拥塞控制没写对，已停下。原文件在 $BACKUP_DIR"
 
 # 混淆这一项两个方向都要验：该有的时候必须有（少了客户端全部失联），
 # 该没有的时候必须没有（多了同样全部失联）。
@@ -424,6 +475,12 @@ for probe in "https://api.ipify.org" "https://ifconfig.me/ip" "https://icanhazip
 done
 [ -n "$SERVER_IP" ] || SERVER_IP="YOUR_SERVER_IP"
 
+if [ "$NEW_ICB" = "false" ]; then
+  CC_LABEL="  → Brutal（保留）"
+else
+  CC_LABEL="  → BBR"
+fi
+
 if [ "$WRITE_OBFS" -eq 1 ]; then
   OBFS_SUMMARY="Salamander，密码 ${OBFS_PASSWORD}（未改动，客户端本来就带着）"
   OBFS_CLIENT_HINT="obfs 保持现状不用动"
@@ -437,7 +494,8 @@ cat <<EOF
 ================= 服务端已回到基线 =================
 
   HY2     ${SERVER_IP}  UDP ${HY2_PORT}   密码 ${HY2_PASSWORD}
-          无端口跳跃、无 NAT 转发、BBR
+          无端口跳跃、无 NAT 转发
+  拥塞    ignoreClientBandwidth: ${NEW_ICB}${CC_LABEL}
   混淆    ${OBFS_SUMMARY}
   VLESS   ${SERVER_IP}  TCP ${SB_PORT}
   SNI     ${SNI}（自签证书，客户端必须跳过校验或做指纹固定）
@@ -453,6 +511,7 @@ cat <<EOF
 
   要点：端口 ${HY2_PORT}，删掉 ports / server_ports / hop-interval 这些
   跳跃字段，${OBFS_CLIENT_HINT}，up/down 按实测填（别虚报）。
+${ICB_CLIENT_WARN}
 
 换完之后再谈别的。基线没跑通之前加任何东西，都会回到现在这个"谁在起作用
 说不清"的局面。加装项的顺序见 docs/RESTORE-BASELINE.md。
